@@ -7,6 +7,7 @@ from torch.nn import Module, Parameter
 from typing import Optional, Tuple, Union
 
 from .activation import HopfieldCore
+from .modern import ModernHopfield
 
 
 class Hopfield(Module):

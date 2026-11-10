@@ -1,5 +1,9 @@
 # Hopfield Networks is All You Need
 
+The `heterogeneous-memory` branch includes a batched `ModernHopfield` parameter
+memory and a [Split MNIST experiment](examples/split_mnist/README.md) comparing
+N and N/2 labeled adaptation updates with `update_steps_max=0`.
+
 _Hubert Ramsauer<sup>1</sup>, Bernhard Schäfl<sup>1</sup>, Johannes Lehner<sup>1</sup>, Philipp Seidl<sup>1</sup>,
 Michael Widrich<sup>1</sup>, Lukas Gruber<sup>1</sup>, Markus Holzleitner<sup>1</sup>, Milena Pavlović<sup>3, 4</sup>,
 Geir Kjetil Sandve<sup>4</sup>, Victor Greiff<sup>3</sup>, David Kreil<sup>2</sup>, Michael Kopp<sup>2</sup>, Günter
