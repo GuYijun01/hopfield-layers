@@ -5,7 +5,8 @@ from .augment import augment_image
 from .cues import fit_block
 
 
-def generate_augmented_cues(initial_state, dataset, indices, count, lr, device, seed):
+def generate_augmented_cues(initial_state, dataset, indices, count, lr, device, seed, *,
+                             augmentation_profile="legacy"):
     """Select distinct source images, then use the exact test-time transforms/order.
 
     The caller supplies indices from one data split; labels are never read here.
@@ -20,6 +21,6 @@ def generate_augmented_cues(initial_state, dataset, indices, count, lr, device, 
     for position, index in enumerate(selected.tolist()):
         image = dataset[index][0]
         # Match predict_image: transform on the input image's device, then move.
-        batches = augment_image(image).to(device).split(16)
+        batches = augment_image(image, profile=augmentation_profile, seed=seed + position).to(device).split(16)
         cues.append(fit_block(initial_state, batches, lr, device, seed + position))
     return torch.stack(cues), selected

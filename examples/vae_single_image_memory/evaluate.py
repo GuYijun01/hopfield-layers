@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import torch
-from .augment import augment_image
+from .augment import augment_image, augmentation_config
 from .cues import fit_block
 from examples.vae_parameter_memory.data import load_mnist
 from examples.vae_parameter_memory.hopfield import make_retriever, retrieve_parameters
@@ -16,12 +16,15 @@ def validate_checkpoint(checkpoint):
             or checkpoint.get("cue_representation") != "parameter_delta_v1"
             or checkpoint["config"]["batch_size"] != 16):
         raise ValueError("Requires a checkpoint trained by vae_single_image_memory.train")
+    expected = augmentation_config(checkpoint.get("augmentation_profile", "legacy"))
+    if checkpoint.get("augmentation_config", expected) != expected:
+        raise ValueError("Checkpoint augmentation settings do not match its saved profile")
 
 
 def predict_image(image, checkpoint, hopfield, device, seed):
     """No label enters augmentation, adaptation or retrieval."""
     validate_checkpoint(checkpoint)
-    augmented = augment_image(image).to(device)
+    augmented = augment_image(image, profile=checkpoint.get("augmentation_profile", "legacy"), seed=seed).to(device)
     cue = fit_block(checkpoint["initial_vae"], augmented.split(16),
                     checkpoint["config"]["lr"], device, seed)
     hopfield.eval()
@@ -72,7 +75,10 @@ def run(args):
     report = {"config": vars(args), "training_config": config,
               "experiment": "single_image_5update_v1",
               "hopfield_cue_protocol": checkpoint.get("hopfield_cue_protocol", "distinct_image_blocks_v1"),
-              "protocol": "Each shuffled test image independently generates 40 rotations and 40 stretches. "
+              "augmentation_profile": checkpoint.get("augmentation_profile", "legacy"),
+              "augmentation_config": augmentation_config(checkpoint.get("augmentation_profile", "legacy")),
+              "protocol": "Each shuffled test image independently generates 40 rotations and 40 axis-scaled views. "
+                          "The saved augmentation profile defines geometry and view shuffling. "
                           "Fresh VAE2 and Adam adapt on five batches of sixteen. Labels only score predictions. "
                           "Source-image reconstruction is an adaptation metric, not held-out reconstruction.",
               "accuracy": confusion.diag().sum().item() / len(rows),

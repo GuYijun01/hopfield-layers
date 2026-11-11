@@ -66,11 +66,13 @@ curves while reusing the cached expert bank and training cues, see the
 
 ## Matched single-image augmented training
 
-The baseline `train.py` remains available for comparison. The new entry point
+The baseline `train.py` remains available for comparison. The entry point
 `train_augmented.py` reuses its expert checkpoint and trains a fresh Hopfield
-projection on single-image augmented cues. It uses the exact same `augment_image`
-function, transformation strength, fixed ordering, and five-update VAE2 procedure
-as `evaluate.py`. Expert parameters, initialization, projection architecture,
+projection on single-image augmented cues. Pass `--augmentation legacy` to repeat
+the original strong, fixed-order augmentation below. The current default is
+`--augmentation mild`, described in the next section. Both profiles use the same
+`augment_image` function and five-update VAE2 procedure as `evaluate.py`, which
+automatically reads the profile from the checkpoint. Expert parameters, initialization, projection architecture,
 loss, replay order, optimizer steps and learning rate are unchanged.
 
 By default, the number of training cues per digit matches the source checkpoint.
@@ -90,7 +92,7 @@ In Colab, first mount Drive and pull the branch, then run from the repository ro
 SOURCE = "/content/hopfield-layers/work/vae_single_image_memory/checkpoint.pt"
 OUTPUT = "/content/drive/MyDrive/NEURO/hopfield_experiment2/augmented_cues"
 
-!python -m examples.vae_single_image_memory.train_augmented --source "{SOURCE}" --output-dir "{OUTPUT}" --device cuda
+!python -m examples.vae_single_image_memory.train_augmented --source "{SOURCE}" --output-dir "{OUTPUT}" --device cuda --augmentation legacy
 ```
 
 The source checkpoint is preserved. Outputs include `checkpoint.pt`,
@@ -119,3 +121,43 @@ display(Image(filename=f"{OUTPUT}/test_1000/evaluation_accuracy.png"))
 The 1,000 test images already inspected are a comparison set, not an untouched
 final test. Use validation results for subsequent choices and reserve fresh test
 images or an independently held-out set for a final estimate.
+
+## Mild, shuffled augmentation
+
+The second augmentation setting keeps 80 views and five updates but uses:
+
+- 40 equally spaced rotations spanning -15 to +15 degrees (endpoints included).
+- 20 horizontal and 20 vertical axis scales spanning 0.9 to 1.1. Values below
+  one compress the digit; values above one stretch it.
+- A seeded random permutation of all 80 views before splitting into five batches
+  of 16. Geometry remains deterministic; each episode seed chooses the ordering.
+
+Canvas size, centering, bilinear interpolation and black background are unchanged.
+The shuffle uses its own local random generator and does not consume the VAE's
+latent-noise generator. Training, validation and test cue generation all use the
+same profile and episode-seed convention. Source-image selection and cue budgets
+match a legacy run from the same source checkpoint and command-line counts.
+
+The profile and explicit geometry are saved as `augmentation_profile` and
+`augmentation_config` in checkpoints, training/validation artifacts and evaluation
+reports. Old checkpoints without those fields always retain legacy augmentation.
+There is no evaluation override that silently switches an old projection to mild
+cues; train a new projection for the mild run. Expert VAEs are reused unchanged.
+
+In Colab after updating the checkout, use the original block-trained expert bank
+as the source and a separate output directory (mount Drive first):
+
+```python
+SOURCE = "/content/hopfield-layers/work/vae_single_image_memory/checkpoint.pt"
+MILD = "/content/drive/MyDrive/NEURO/hopfield_experiment2/augmented_mild"
+
+!python -m examples.vae_single_image_memory.train_augmented --source "{SOURCE}" --output-dir "{MILD}" --device cuda --augmentation mild
+!python examples/vae_single_image_memory/results/plot_hopfield_training.py "{MILD}/hopfield_training.json"
+
+from IPython.display import Image, display
+display(Image(filename=f"{MILD}/hopfield_stage_10.png"))
+
+!python -m examples.vae_single_image_memory.evaluate --checkpoint "{MILD}/checkpoint.pt" --output-dir "{MILD}/test_1000" --device cuda --test-limit 1000 --seed 123
+!python examples/vae_single_image_memory/results/plot_accuracy.py "{MILD}/test_1000/evaluation.json"
+display(Image(filename=f"{MILD}/test_1000/evaluation_accuracy.png"))
+```

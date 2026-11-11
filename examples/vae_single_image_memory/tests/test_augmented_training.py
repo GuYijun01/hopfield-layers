@@ -25,14 +25,19 @@ class AugmentedTrainingTests(unittest.TestCase):
         initial = copy.deepcopy(VAE().state_dict())
         image = torch.rand(784)
         data = TensorDataset(image.unsqueeze(0), torch.tensor([4]))
-        cues, indices = generate_augmented_cues(initial, data, torch.tensor([0]), 1, 0.001, "cpu", 9)
         checkpoint = {"experiment": "single_image_5update_v1", "cue_representation": "parameter_delta_v1",
                       "config": {"batch_size": 16, "lr": 0.001}, "initial_vae": initial,
                       "memories": torch.randn(10, 150139), "digits": list(range(10))}
         hopfield = make_retriever(150139, 32, 8)
-        _, test_cue, _ = predict_image(image, checkpoint, hopfield, "cpu", 9)
-        self.assertEqual(indices.tolist(), [0])
-        torch.testing.assert_close(cues[0], test_cue, atol=0, rtol=0)
+        for profile in ("legacy", "mild"):
+            with self.subTest(profile=profile):
+                cues, indices = generate_augmented_cues(
+                    initial, data, torch.tensor([0]), 1, 0.001, "cpu", 9,
+                    augmentation_profile=profile)
+                checkpoint["augmentation_profile"] = profile
+                _, test_cue, _ = predict_image(image, checkpoint, hopfield, "cpu", 9)
+                self.assertEqual(indices.tolist(), [0])
+                torch.testing.assert_close(cues[0], test_cue, atol=0, rtol=0)
 
     def test_sampling_is_reproducible_distinct_and_label_free(self):
         initial = copy.deepcopy(VAE().state_dict())
@@ -69,7 +74,8 @@ class AugmentedTrainingTests(unittest.TestCase):
                     "cues": torch.randn(20, 16), "hopfield": make_retriever(16, 8, 4).state_dict(),
                     "block_indices": [digit_split(data, d, 42 + d, 20)[0][:1] for d in range(10)]}
 
-        def fake_cues(state, dataset, indices, count, lr, device, seed):
+        def fake_cues(state, dataset, indices, count, lr, device, seed, *, augmentation_profile):
+            self.assertEqual(augmentation_profile, "mild")
             sources = indices[:count]
             return torch.randn(count, 16), sources
 
@@ -78,7 +84,7 @@ class AugmentedTrainingTests(unittest.TestCase):
             torch.save(baseline, source)
             original_bytes = source.read_bytes()
             args = Namespace(source=str(source), output_dir=str(output), device="cpu", threads=1,
-                             cues_per_digit=0, validation_cues_per_digit=0, log_every=1)
+                             cues_per_digit=0, validation_cues_per_digit=0, log_every=1, augmentation="mild")
             with patch("examples.vae_single_image_memory.train_augmented.load_mnist", return_value=data), \
                  patch("examples.vae_single_image_memory.train_augmented.generate_augmented_cues", side_effect=fake_cues):
                 report = run(args)
@@ -89,6 +95,9 @@ class AugmentedTrainingTests(unittest.TestCase):
             torch.testing.assert_close(trained["initial_vae"]["parameters"], initial["parameters"], atol=0, rtol=0)
             self.assertEqual(trained["targets"].bincount().tolist(), baseline["targets"].bincount().tolist())
             self.assertEqual(trained["hopfield_cue_protocol"], "single_image_augmented_v1")
+            self.assertEqual(trained["augmentation_profile"], "mild")
+            self.assertEqual(trained["augmentation_config"], validation["augmentation_config"])
+            self.assertEqual(report["augmentation_profile"], "mild")
             self.assertNotIn("block_indices", trained)
             self.assertFalse(torch.isin(trained["cue_source_indices"], validation["source_indices"]).any())
             self.assertEqual(len(report["stages"]), 10)

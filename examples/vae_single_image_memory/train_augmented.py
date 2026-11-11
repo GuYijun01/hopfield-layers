@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from .augmented_cues import generate_augmented_cues
+from .augment import augmentation_config
 from .evaluate import validate_checkpoint
 from examples.vae_parameter_memory.data import digit_split, load_mnist
 from examples.vae_parameter_memory.hopfield import (
@@ -27,6 +28,8 @@ def run(args):
     if checkpoint.get("hopfield_cue_protocol", "distinct_image_blocks_v1") != "distinct_image_blocks_v1":
         raise ValueError("Use the original distinct-image-block checkpoint as --source")
     config = dict(checkpoint["config"])
+    profile = args.augmentation
+    settings = augmentation_config(profile)
     seed = config["seed"]
     torch.set_num_threads(args.threads)
     torch.manual_seed(seed)
@@ -52,10 +55,12 @@ def run(args):
               "single-image cues", flush=True)
         cues, sources = generate_augmented_cues(
             checkpoint["initial_vae"], dataset, train_indices, train_count,
-            config["lr"], args.device, seed + 1000 + digit * 10000)
+            config["lr"], args.device, seed + 1000 + digit * 10000,
+            augmentation_profile=profile)
         validation, validation_sources = generate_augmented_cues(
             checkpoint["initial_vae"], dataset, val_indices, val_count,
-            config["lr"], args.device, seed + 1000000 + digit * 10000)
+            config["lr"], args.device, seed + 1000000 + digit * 10000,
+            augmentation_profile=profile)
         train_cues.append(cues)
         train_targets.append(torch.full((len(cues),), digit, dtype=torch.long, device=args.device))
         train_sources.append(sources)
@@ -69,7 +74,8 @@ def run(args):
     output.mkdir(parents=True, exist_ok=True)
     torch.save({"cues": validation_cues.cpu(), "targets": validation_targets.cpu(),
                 "source_indices": torch.cat(val_sources),
-                "cue_protocol": "single_image_augmented_v1"}, output / "validation_cues.pt")
+                "cue_protocol": "single_image_augmented_v1", "augmentation_profile": profile,
+                "augmentation_config": settings}, output / "validation_cues.pt")
 
     # Score the baseline on these same augmented cue sets for a direct reference.
     hopfield.load_state_dict(checkpoint["hopfield"])
@@ -79,14 +85,16 @@ def run(args):
     print("Frozen baseline on augmented cues: " + json.dumps(baseline), flush=True)
     report = {"source_checkpoint": str(source), "config": vars(args), "training_config": config,
               "hopfield_cue_protocol": "single_image_augmented_v1",
+              "augmentation_profile": profile, "augmentation_config": settings,
               "frozen_original": baseline,
               "frozen_original_description": "Frozen block-trained baseline on the same augmented cue sets",
-              "plot_title": "Hopfield training on single-image augmented cues",
+              "plot_title": f"Hopfield training on single-image augmented cues ({profile})",
               "train_cues": len(cues), "validation_cues": len(validation_cues),
               "protocol": "Reuse identical expert memories and initialization. Fresh shared Hopfield "
                           "projection, original sequential replay, steps, learning rate and objective. "
-                          "Each source image yields the unchanged 40 rotations then 20 horizontal and "
-                          "20 vertical stretches, in fixed order, five batches of sixteen. Fresh VAE2 "
+                          "Each source image yields 40 rotations, 20 horizontal and 20 vertical scales. "
+                          "Saved augmentation profile defines geometry and seeded view ordering, "
+                          "identical for training, validation and testing. Five batches of sixteen. Fresh VAE2 "
                           "and Adam per source. Source images are sampled without replacement within "
                           "each original training/validation split. Validation images previously selected "
                           "expert checkpoints but never update or select Hopfield weights. No test data.",
@@ -109,6 +117,7 @@ def run(args):
                    if key not in ("block_indices", "diagnostic_source", "cues", "targets", "hopfield")}
         trained.update({"config": {**config, "output_dir": str(output)},
                         "hopfield_cue_protocol": "single_image_augmented_v1",
+                        "augmentation_profile": profile, "augmentation_config": settings,
                         "source_checkpoint": str(source),
                         "hopfield": {k: v.detach().cpu() for k, v in hopfield.state_dict().items()},
                         "cues": cues[train_mask].detach().cpu(), "targets": targets[train_mask].cpu(),
@@ -121,7 +130,9 @@ def run(args):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", default="work/vae_single_image_memory/checkpoint.pt")
-    parser.add_argument("--output-dir", default="work/vae_single_image_augmented")
+    parser.add_argument("--output-dir", default="work/vae_single_image_augmented_mild")
+    parser.add_argument("--augmentation", choices=("legacy", "mild"), default="mild",
+                        help="mild: +/-15 degrees, 0.9..1.1 axis scaling, seeded shuffle; legacy preserves the old protocol")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--log-every", type=int, default=1)
