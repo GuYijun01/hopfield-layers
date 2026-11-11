@@ -1,0 +1,88 @@
+{
+  "config": {
+    "data_dir": "work/data",
+    "output_dir": "work/vae_parameter_memory_delta",
+    "epochs": 10,
+    "batch_size": 16,
+    "cue_passes": 1,
+    "lr": 0.001,
+    "hopfield_steps": 200,
+    "hopfield_lr": 0.001,
+    "feature_size": 2048,
+    "association_size": 64,
+    "train_limit": 0,
+    "seed": 42,
+    "threads": 2,
+    "device": "cpu"
+  },
+  "source_checkpoint": "work/vae_parameter_memory/checkpoint.pt",
+  "cue_representation": "parameter_delta_v1",
+  "parameter_count": 150139,
+  "memories": 10,
+  "training_cues": 62,
+  "variants_per_digit": [
+    6,
+    7,
+    6,
+    6,
+    6,
+    6,
+    6,
+    7,
+    6,
+    6
+  ],
+  "stages": [
+    {
+      "after_digit": 0,
+      "loss": 0.0,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 1,
+      "loss": 0.0007498289924114943,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 2,
+      "loss": 0.00010065667447634041,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 3,
+      "loss": 0.00013179692905396223,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 4,
+      "loss": 3.867382474709302e-05,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 5,
+      "loss": 6.50207293801941e-05,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 6,
+      "loss": 3.919970185961574e-05,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 7,
+      "loss": 4.632334821508266e-05,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 8,
+      "loss": 2.5911764168995433e-05,
+      "cue_accuracy": 1.0
+    },
+    {
+      "after_digit": 9,
+      "loss": 5.860898454557173e-05,
+      "cue_accuracy": 1.0
+    }
+  ],
+  "protocol": "Reused unchanged digit-specific VAE0 memories and cached training-block VAE2 parameters; subtracted shared initialization to obtain parameter-delta cues. Reinitialized Hopfield and trained sequentially with cue replay. All keys use final-minus-initial deltas; outputs restore absolute parameters. No test data or labels enter training or refitting."
+}

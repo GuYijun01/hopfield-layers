@@ -46,3 +46,8 @@ def restore_vector(model, parameters):
     if parameters.ndim != 1 or parameters.numel() != sum(p.numel() for p in model.parameters()):
         raise ValueError("Parameter vector does not match this VAE")
     vector_to_parameters(parameters.detach().clone(), model.parameters())
+
+
+def initial_vector(initial_state):
+    """Flatten this VAE state dict (which contains parameters only) in order."""
+    return torch.cat([value.detach().reshape(-1) for value in initial_state.values()])

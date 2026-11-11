@@ -1,7 +1,7 @@
 """VAE0 expert training, independent of Hopfield optimization."""
 import copy
 import torch
-from .vae import VAE, parameter_vector, vae_loss
+from .vae import VAE, initial_vector, parameter_vector, vae_loss
 
 
 @torch.no_grad()
@@ -39,7 +39,7 @@ def train_vae0(initial_state, train, validation, epochs, lr, device, cue_batches
             optimizer.step()
             updates += 1
             if updates == cue_batches:
-                first_cue = parameter_vector(model)
+                first_cue = parameter_vector(model) - initial_vector(initial_state).to(device)
         score = validation_loss(model, validation, device, seed)
         history.append(score)
         if score < best_loss:

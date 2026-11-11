@@ -1,10 +1,10 @@
 """VAE2 starts from the same parameters and fresh Adam state for every cue."""
 import torch
-from .vae import VAE, parameter_vector, vae_loss
+from .vae import VAE, initial_vector, parameter_vector, vae_loss
 
 
 def fit_block(initial_state, image_batches, lr, device, seed):
-    """One pass over a block; exactly one optimizer update for each batch."""
+    """Return q = vec(theta_after_50) - vec(theta_init) after one block pass."""
     model = VAE().to(device)
     model.load_state_dict(initial_state)
     model.train()
@@ -20,7 +20,7 @@ def fit_block(initial_state, image_batches, lr, device, seed):
         count += 1
     if count != 50:
         raise ValueError("Each VAE2 block must contain exactly 50 batches")
-    return parameter_vector(model)
+    return parameter_vector(model) - initial_vector(initial_state).to(device)
 
 
 def generate_block_cues(initial_state, dataset, indices, batch_size, lr, device,
@@ -44,13 +44,3 @@ def generate_block_cues(initial_state, dataset, indices, batch_size, lr, device,
             cues.append(fit_block(initial_state, batches, lr, device, seed + len(cues)))
             blocks.append(block.clone())
     return torch.stack(cues), torch.stack(blocks)
-
-
-def image_cue(initial_state, image, batch_size, lr, device, seed):
-    """Unlabeled adaptation: repeat ONE unknown image for 50 VAE2 updates.
-
-    This differs from multi-image digit-specific training blocks; evaluation
-    measures whether retrieval generalizes across this cue distribution shift.
-    """
-    batch = image.reshape(1, 784).expand(batch_size, -1)
-    return fit_block(initial_state, (batch for _ in range(50)), lr, device, seed)

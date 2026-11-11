@@ -9,7 +9,7 @@ from .cues import generate_block_cues
 from .data import digit_split, load_mnist, make_loader
 from .hopfield import make_retriever, train_retriever
 from .training import train_vae0
-from .vae import VAE, parameter_vector
+from .vae import VAE, initial_vector, parameter_vector
 
 
 def run(args):
@@ -25,10 +25,11 @@ def run(args):
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
     report = {"config": vars(args), "parameter_count": dimension, "digits": summaries,
-              "torch_version": str(torch.__version__),
+              "torch_version": str(torch.__version__), "cue_representation": "parameter_delta_v1",
               "protocol": "Ten independent digit-specific VAE0 experts from shared initialization. "
                           "VAE2 variants use one pass over 50-batch training blocks, resetting parameters "
                           "and optimizer per block. Hopfield replay learns variant-to-best-memory pairs. "
+                          "Cues are vec(theta_after_50)-vec(theta_init). "
                           "Test images and test labels are excluded from this training."}
     for digit in range(10):
         train_indices, val_indices = digit_split(dataset, digit, args.seed + digit, args.train_limit)
@@ -48,13 +49,13 @@ def run(args):
         blocks.append(block_indices)
         bank, cue_bank, target_bank = torch.stack(memories), torch.cat(cues), torch.cat(targets)
         retrieval = train_retriever(hopfield, cue_bank, target_bank, bank,
-                                    args.hopfield_steps, args.hopfield_lr)
+                                    args.hopfield_steps, args.hopfield_lr, initial_vector(initial_state).to(device))
         summary.update({"digit": digit, "train_examples": len(train_indices),
                         "validation_examples": len(val_indices), "cue_variants": len(variants),
                         "examples_per_block": 50 * args.batch_size, "batches_per_cue": 50,
                         "hopfield_training": retrieval})
         summaries.append(summary)
-        torch.save({"config": vars(args), "initial_vae": initial_state,
+        torch.save({"config": vars(args), "initial_vae": initial_state, "cue_representation": "parameter_delta_v1",
                     "hopfield": hopfield.state_dict(), "parameter_count": dimension,
                     "memories": bank.cpu(), "cues": cue_bank.cpu(), "targets": target_bank.cpu(),
                     "main_first50_cues": torch.stack(main_cues).cpu(),
@@ -67,7 +68,7 @@ def run(args):
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", default="work/data")
-    parser.add_argument("--output-dir", default="work/vae_parameter_memory")
+    parser.add_argument("--output-dir", default="work/vae_parameter_memory_delta")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--cue-passes", type=int, default=1)

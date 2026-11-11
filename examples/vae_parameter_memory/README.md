@@ -1,97 +1,101 @@
 # Digit-specific VAE parameter memories
 
-This is a separate experiment. The previous Split MNIST MLP example and its
-results are unchanged. It uses the existing reusable `hflayers.modern.ModernHopfield`
-class, enforcing `update_steps_max=0`.
+This experiment is separate from the previous Split MNIST MLP example. The
+VAE and Hopfield networks have separate parameters and training objectives.
+Hopfield performs one association, enforcing `update_steps_max=0`.
 
 ## Networks and files
 
 | File | Responsibility |
 | --- | --- |
-| `vae.py` | Fully connected VAE, negative ELBO, flatten/restore parameters |
-| `training.py` | Train each main VAE0 expert and restore its best validation checkpoint |
-| `cues.py` | Reset VAE2 and Adam for each independent 50-batch training block; unknown-image cues |
-| `data.py` | MNIST in [0,1], reproducible training/validation splits and loaders |
-| `hopfield.py` | Separate Hopfield network and supervised cue-to-memory optimization |
-| `train.py` | Sequentially build the ten-memory bank and replay all observed cue variants |
-| `evaluate.py` | Randomly mixed, unknown test images; label-free adaptation and memory selection |
-| `tests/test_vae_memory.py` | Architecture, block reset/isolation, best checkpoint, cue training, prediction tests |
+| `vae.py` | VAE architecture, negative ELBO, flatten/restore parameters |
+| `training.py` | Train ten independent VAE0 experts and select best validation checkpoints |
+| `cues.py` | Reset VAE2 and Adam for each 50-batch block; return parameter-change cues |
+| `data.py` | MNIST in [0,1], training/validation splits and loaders |
+| `hopfield.py` | Train the Hopfield encoder; retrieve full VAE parameters from delta cues |
+| `train.py` | Build expert memories and replay training-cue variants sequentially |
+| `refit.py` | Convert cached legacy cues to deltas and refit without retraining VAE0 |
+| `evaluate.py` | Retrieve memories from held-out test-image blocks |
+| `tests/test_vae_memory.py` | Six focused tests, including delta origins and full-parameter restoration |
 
-All VAE instances use the same architecture (150,139 trainable parameters):
+Every VAE has 150,139 trainable parameters:
 
-- Encoder: 784 → 85 ReLU → 85 ReLU, then separate five-dimensional mean and
-  log-variance heads.
-- Latent variable: five-dimensional Gaussian, trained by reparameterization.
-- Decoder: 5 → 85 ReLU → 85 ReLU → 784 pixel logits.
-- Loss: pixel-summed binary cross entropy plus KL(q(z|x) || N(0,I)), averaged
-  across images. Decoder probabilities are sigmoid(logits).
+- Encoder: 784 → 85 ReLU → 85 ReLU → separate 5-dimensional mean/log-variance heads.
+- Gaussian latent variable: five dimensions, trained by reparameterization.
+- Decoder: 5 → 85 ReLU → 85 ReLU → 784 pixel logits; sigmoid gives pixel probabilities.
+- Loss: pixel-summed BCE plus KL(q(z|x) || N(0,I)), averaged over images.
 
-VAE0 is the **role of the main expert**, not a ten-class classifier. There are
-ten independent VAE0 experts, trained in digit order 0,...,9. VAE2 is a separate
-instance of the same architecture used only to construct parameter cues.
-Hopfield is an independent neural network, not a layer in the VAE and not
-jointly trained through the VAE loss. The initial parameters are shared as a
-starting point, but no trained VAE parameters or optimizer state carry over
-between experts or between VAE2 blocks.
+VAE0 denotes the main-expert role. Ten independent experts are trained in digit
+order 0,...,9, each from the same initial parameters. VAE2 is a separate instance
+of the same architecture, freshly initialized from those shared parameters for
+every block. No trained VAE weights or Adam state carry between blocks/experts.
+Hopfield optimization does not backpropagate into either VAE.
 
-## Memories and variant cues
+## Training memories and delta cues
 
-For digit d, split its official MNIST training examples into 90% training and
-10% validation. Train its VAE0 for ten epochs with Adam (lr=0.001). Select the
-lowest validation negative-ELBO checkpoint as the single stored memory theta_d*.
-Validation uses fixed latent noise across epochs. Save the parameters after
-exactly the first **50 optimizer updates**, theta_d_first, as a reference cue;
-this is not an end-of-first-epoch checkpoint.
+For each digit c, 90% of its official MNIST training examples train its VAE0;
+10% select the best checkpoint among ten epochs. Adam uses lr=0.001. Fixed
+latent noise makes validation comparisons reproducible. The one best **full**
+parameter vector theta_c* becomes that digit's stored memory.
 
-Separately shuffle that digit's training examples and partition them into full
-blocks. A block contains **50 minibatches** of **16 images**, or 800 distinct
-images by default. For each block j:
+Shuffle the training examples into disjoint full blocks. With batch size
+**d=16**, each block contains **N=50 minibatches**, or **800 images**. A fresh
+VAE2 and fresh Adam optimizer visit each block once (one epoch over the block).
+After exactly 50 updates, the cue is
 
-1. Construct a fresh VAE2 from the common initial parameters.
-2. Construct a fresh Adam optimizer with no previous momentum/variance state.
-3. Train one epoch over that block: each image is visited once, exactly 50 updates.
-4. Save theta_d_first_j and pair it with the same fixed memory theta_d*.
+    q_c,j = vec(theta_c,j^(50)) - vec(theta_init).
 
-Incomplete final blocks are discarded for cue generation; they remain available
-for main VAE0 training. Within a pass, blocks are disjoint. `--cue-passes` can
-produce additional reshuffled variants, with overlap across passes explicitly
-allowed. No validation or test images enter cue generation. k varies by digit:
-with batch size 16 and one pass it is floor(N_train / 800).
+This is a parameter **difference**, not the raw partially trained weights.
+`fit_block` implements the subtraction:
 
-After each arriving digit, train Hopfield using all accumulated variants and
-memories (explicit cue replay). Training minimizes the cross entropy of the
-correct memory association plus normalized parameter reconstruction MSE. The
-VAE0 memories and VAE2 cues are fixed tensors; only the Hopfield encoder is
-optimized. `main_first50_cues` are saved for inspection, while the actual
-Hopfield training examples are the independently generated **VAE2 variants**.
+```python
+return parameter_vector(model) - initial_vector(initial_state).to(device)
+```
 
-The retriever standardizes using the memory bank, projects 2,048 deterministic
-parameter coordinates into 64 association dimensions, and performs one cosine
-softmax association (beta=20). It outputs a weighted combination of the full
-150,139-coordinate memories. Use `--feature-size 150139` to project every
-coordinate instead. No iterative Hopfield updates are performed.
+For digit c, multiple block cues q_c,1,...,q_c,k all target the same memory
+theta_c*. k=floor(N_train/800) by default. Incomplete tails are unused for cue
+generation, but remain in VAE0 training. `--cue-passes` reshuffles for additional
+variants; blocks do not overlap within a pass, but can overlap across passes.
+Validation/test images never enter these training cues.
 
-## Unknown-image prediction
+After each arriving digit, Hopfield trains with replay of all observed training
+cue/memory pairs. Its loss combines correct-memory association cross entropy
+with normalized parameter reconstruction MSE. Only the Hopfield encoder is
+optimized. The main VAE0's first-50 **delta** cue is saved separately for
+inspection; Hopfield training uses the VAE2 block variants.
 
-A test image does not supply a label or a task ID to either network. Since one
-image does not itself supply 50 minibatches, the implemented inference protocol
-repeats that image into a batch of the training batch size, then performs
-**50 unlabeled VAE2 updates** from the common initialization with fresh Adam.
-The VAE reconstruction/KL loss needs no digit label.
+Both query and key coordinates use the same origin: memory keys are
+vec(theta_c*)-vec(theta_init). The original full memories remain stored. The
+retrieved delta receives the shared initialization back before loading into a
+VAE. Thus the output contains full weights and biases, not a delta mistakenly
+interpreted as network parameters. See `retrieve_parameters`.
 
-Feed the resulting parameter cue into Hopfield with all ten memories. The
-highest association's stored digit is the predicted digit. The soft retrieved
-parameter vector is loaded into another VAE to reconstruct the image. A VAE has
-no ten-class output head; digit classification here means **memory selection**.
+The shared learned projection uses 2,048 deterministic coordinates and 64
+association dimensions, cosine similarities, and beta=20 softmax. Retrieval
+returns a weighted combination of the full memories. `--feature-size 150139`
+uses every parameter coordinate. There are no iterative Hopfield updates.
 
-Training blocks contain many different images of one digit, whereas a test cue
-uses one repeated unknown image. This is a substantial distribution shift;
-correct retrieval on training variants does not establish unknown-image
-accuracy. Evaluation measures this explicitly rather than assuming it works.
-The default evaluation is a balanced random subset of 100 test images (ten per
-digit), shuffled together. Labels are used for subset allocation and metrics,
-never inference. Each image is processed independently; there are no
-class-homogeneous support episodes and no true-label memory routing.
+## Held-out test-block retrieval
+
+Use official MNIST **test** images, not training images, to form test cues.
+For a block, reset VAE2 and Adam to the same starting state, train on its first
+50 full minibatches once, and compute the same q_c^(50) difference vector.
+Feed that cue to the frozen Hopfield network with all ten stored memories.
+The highest association identifies the retrieved memory/digit. No label or
+memory index enters `predict_block`, VAE2's loss, or Hopfield inference.
+
+The benchmark assumes **digit-homogeneous blocks** (the meaning of q_c). The
+evaluator uses test labels only to construct these benchmark blocks and score
+retrieval. Blocks arrive in shuffled digit order. This is identification of one
+unknown digit's block; it does not classify individual images in an arbitrary
+mixed-digit block, which would not have a single correct target memory.
+
+Use nonoverlapping test blocks, without repeating one image or cycling samples.
+With d=16, all ten digits provide one complete 800-image block: **10 test cues,
+8,000 adaptation images**. The remaining **2,000** test images are disjoint
+query images for reconstruction scoring using the retrieved full parameters.
+The main result is accuracy over test **blocks**, not 8,000 independent digit
+predictions. No test cue, test label, or query metric trains/selects Hopfield.
 
 ## Run
 
@@ -104,47 +108,54 @@ python -m examples.vae_parameter_memory.train
 python -m examples.vae_parameter_memory.evaluate
 ```
 
-The checkpoint and JSON reports default to `work/vae_parameter_memory/`.
-`checkpoint.pt` contains the common initialization, ten full memory vectors,
-Hopfield weights, VAE2 cue vectors and targets, main first-50 cues, exact block
-indices, configuration, and memory digit labels. `training.json` records each
-expert's best epoch/validation losses and replay retrieval accuracy.
-`evaluation.json` records unknown-image accuracy, confusion matrix, per-digit
-accuracy, associations, selected memories, and posterior-mean reconstruction
-BCE. `reconstructions.pt` saves reconstructed pixels and original test indices.
-The reconstruction metric uses the posterior mean, not a stochastic ELBO.
+Outputs default to `work/vae_parameter_memory_delta/`. Checkpoints carry
+`cue_representation="parameter_delta_v1"`; evaluation rejects older raw-cue
+checkpoints rather than silently mixing representations.
 
-For all 10,000 test images (50 VAE2 updates **per image**, potentially expensive):
+To reuse an existing VAE bank and cached training blocks from the earlier run:
 
 ```bash
-python -m examples.vae_parameter_memory.evaluate --test-per-digit 0
+python -m examples.vae_parameter_memory.refit \
+  --source work/vae_parameter_memory/checkpoint.pt
+python -m examples.vae_parameter_memory.evaluate
 ```
 
-A smaller real-MNIST integration run, retaining two variants per digit:
+Refitting subtracts the initialization from cached raw training cues, starts a
+fresh Hopfield encoder, and replays digits sequentially. It changes neither
+the stored VAE0 memories nor their validation-selected checkpoints. No test
+data enters this conversion. Newly trained checkpoints already use deltas.
 
-```bash
-python -m examples.vae_parameter_memory.train --epochs 2 --train-limit 2000 \
-  --hopfield-steps 50 --output-dir work/vae_memory_smoke
-python -m examples.vae_parameter_memory.evaluate \
-  --checkpoint work/vae_memory_smoke/checkpoint.pt \
-  --output-dir work/vae_memory_smoke --test-per-digit 2
-```
+`checkpoint.pt` saves memories, initialization, delta training cues, targets,
+main first-50 delta cues, block indices, Hopfield weights, and configuration.
+`training.json` records training/refit results. `evaluation.json` records each
+test block, associations, selected memory, full-parameter RMSE against its
+correct stored memory, and reconstruction BCE on disjoint query images.
+`test_cues.pt` saves test delta cues, retrieved full parameters, and exact
+adaptation/query indices. Query BCE uses posterior-mean decoding, not a
+stochastic ELBO. `--blocks-per-digit` can cap full test blocks; zero uses all.
 
-## Recorded run
+## Historical results
 
-The committed `results/` files contain a full-data ten-epoch training run
-(seed 42) and evaluation on 100 shuffled, balanced test images (seed 123).
-There are ten memories of 150,139 parameters and 62 VAE2 training cues:
-`[6,7,6,6,6,6,6,7,6,6]` for digits 0 through 9. All five new unit tests pass.
-Reloading the saved checkpoint gives 100% retrieval accuracy on those training
-variants. It also selects the correct memory for all ten saved VAE0
-first-50-batch reference cues, which were not used as Hopfield training inputs.
+`results/legacy_single_image/` preserves the earlier raw-parameter,
+repeated-single-image evaluation (39/100). It is a different protocol and is
+not the current test-block experiment. Its source is available at commit
+`e397c6a`. New delta/block reports are stored separately in `results/`.
 
-Unknown-image memory-selection accuracy is **39/100 (39%)**. Per-digit numbers
-of correct predictions out of ten are `[8,10,4,2,6,0,5,2,0,2]`.
-Thus, successful retrieval from multi-image training blocks does **not** imply
-reliable retrieval from a single repeated image. This result is retained
-without tuning on test labels. Better generalization would require a separate
-study of training cues that match the intended inference input. The trained
-checkpoint and reconstructions remain under `work/`, outside source control;
-the committed reports contain the configuration and individual predictions.
+## Recorded delta/block run
+
+`results/delta_training_seed42.json` records refitting on the 62 cached training
+block cues from the unchanged ten-epoch VAE0 experts. The checkpoint conversion
+was verified against the original raw cues, and expert memories are bitwise
+unchanged. A separate from-scratch integration run also exercised the new
+training path (one epoch, 900 examples per digit, one cue per digit).
+
+`results/delta_blocks_seed123.json` records **10/10 correct memory selections**
+on ten held-out, digit-homogeneous test blocks, presented in shuffled order.
+Every block contains 800 distinct images and exactly 50 updates. The 8,000
+adaptation images and 2,000 reconstruction-query images are disjoint and cover
+the official 10,000-image test set. This is ten block decisions, not 10,000
+independent classifications. Mean parameter RMSE of the soft retrieved output
+against the correct full memory is approximately **0.00209839**; selecting the
+correct memory does not mean its soft output is numerically identical to that
+memory. Saved test cues reproduce the recorded associations after checkpoint
+reload. All six unit tests pass.
