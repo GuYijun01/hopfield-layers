@@ -59,3 +59,7 @@ and plotting a confusion matrix and per-digit accuracy. From the repository root
 ```bash
 python examples/vae_single_image_memory/results/plot_accuracy.py work/vae_single_image_memory/evaluation.json
 ```
+
+To diagnose the original Hopfield projection with training/validation loss
+curves while reusing the cached expert bank and training cues, see the
+[diagnostic instructions](results/README.md#hopfield-trainingvalidation-curves-using-your-original-checkpoint).
