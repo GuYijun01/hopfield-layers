@@ -39,7 +39,7 @@ def run(args):
                               config["association_size"]).to(args.device)
     fresh_state = copy.deepcopy(hopfield.state_dict())
     dataset = load_mnist(config["data_dir"], train=True)
-    train_cues, train_targets, train_sources = [], [], []
+    train_cues, train_targets, train_sources, train_seeds = [], [], [], []
     val_cues, val_targets, val_sources = [], [], []
     for digit in checkpoint["digits"]:
         train_indices, val_indices = digit_split(
@@ -64,6 +64,7 @@ def run(args):
         train_cues.append(cues)
         train_targets.append(torch.full((len(cues),), digit, dtype=torch.long, device=args.device))
         train_sources.append(sources)
+        train_seeds.append(torch.arange(len(cues), dtype=torch.long) + seed + 1000 + digit * 10000)
         val_cues.append(validation)
         val_targets.append(torch.full((len(validation),), digit, dtype=torch.long, device=args.device))
         val_sources.append(validation_sources)
@@ -122,6 +123,7 @@ def run(args):
                         "hopfield": {k: v.detach().cpu() for k, v in hopfield.state_dict().items()},
                         "cues": cues[train_mask].detach().cpu(), "targets": targets[train_mask].cpu(),
                         "cue_source_indices": torch.cat(train_sources[:digit + 1]),
+                        "cue_seeds": torch.cat(train_seeds[:digit + 1]),
                         "digits": list(range(digit + 1))})
         torch.save(trained, output / "checkpoint.pt")
     return report

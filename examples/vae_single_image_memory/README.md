@@ -161,3 +161,56 @@ display(Image(filename=f"{MILD}/hopfield_stage_10.png"))
 !python examples/vae_single_image_memory/results/plot_accuracy.py "{MILD}/test_1000/evaluation.json"
 display(Image(filename=f"{MILD}/test_1000/evaluation_accuracy.png"))
 ```
+
+## Same training images, different cue seeds
+
+`diagnose_seeds.py` freezes an existing augmented-cue Hopfield checkpoint and
+uses exactly its stored training source indices, targets and source order.
+It neither resamples images nor updates Hopfield or expert weights. It compares:
+
+1. The cached training cues, scored by the saved projection.
+2. Cues regenerated from the same images using their original episode seeds.
+3. Five repeated regenerations with new episode seeds by default.
+
+Every new cue still starts from the same initialization with fresh Adam and uses
+80 views in five batches of 16. Default `--vary both` changes the view permutation
+and VAE latent noise; geometry stays fixed. `--vary shuffle` changes only view
+ordering, and `--vary latent` changes only latent sampling. The legacy profile
+has fixed ordering, so it supports only `latent` or `both`.
+
+This diagnostic evaluates the final frozen network; the horizontal axis is a
+seed condition, not an optimizer step. It records the exact training objective
+(association CE plus normalized parameter MSE), both component losses, accuracy,
+prediction agreement with cached cues, relative cue change and per-image results.
+Scoring uses small chunks (default 64 cues) to reduce memory use without changing
+the objective's equal weighting over source images. Minor floating-point
+differences from full-batch reductions are possible.
+
+For Colab, keep input/output on local storage to avoid mounted-Drive checkpoint
+I/O errors. If necessary, copy the mild checkpoint back from Drive using
+`shutil.copyfile`. From `/content/hopfield-layers` after pulling the branch:
+
+```python
+CHECKPOINT = "/content/augmented_mild_run/checkpoint.pt"
+STABILITY = "/content/augmented_mild_seed_diagnostics"
+
+!python -m examples.vae_single_image_memory.diagnose_seeds --checkpoint "{CHECKPOINT}" --output-dir "{STABILITY}" --device cuda --runs 5
+!python examples/vae_single_image_memory/results/plot_seed_stability.py "{STABILITY}/seed_stability.json"
+
+from IPython.display import Image, display
+display(Image(filename=f"{STABILITY}/seed_stability.png"))
+```
+
+Original seeds are read from `cue_seeds` in newer checkpoints or reconstructed
+from the existing `train_augmented.py` seed schedule for older ones; no retraining
+is needed. Same-seed replay should closely match cached cues and loss. If it does
+not, first check the dataset, software and device used for reproduction before
+attributing differences to new seeds. A substantial loss increase with new seeds
+would indicate sensitivity to the stochastic cue-generation trajectory. Stable
+performance here alongside poor validation suggests the gap concerns unseen
+source images instead. Seed runs are repeated paired measurements on the same
+images, not independent new training or validation examples.
+
+To isolate the two sources of randomness, repeat the command with `--vary shuffle`
+and `--vary latent`, using separate output directories. No large cue files are
+saved by this diagnostic; JSON and PNG can be copied to Drive afterward.
