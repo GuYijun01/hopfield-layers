@@ -1,0 +1,99 @@
+"""Evaluate independent single-test-image, five-update VAE cues."""
+import argparse
+import json
+from pathlib import Path
+import torch
+from .augment import augment_image
+from .cues import fit_block
+from examples.vae_parameter_memory.data import load_mnist
+from examples.vae_parameter_memory.hopfield import make_retriever, retrieve_parameters
+from examples.vae_parameter_memory.vae import initial_vector
+from examples.vae_parameter_memory.evaluate import reconstruction_bce
+
+
+def validate_checkpoint(checkpoint):
+    if (checkpoint.get("experiment") != "single_image_5update_v1"
+            or checkpoint.get("cue_representation") != "parameter_delta_v1"
+            or checkpoint["config"]["batch_size"] != 16):
+        raise ValueError("Requires a checkpoint trained by vae_single_image_memory.train")
+
+
+def predict_image(image, checkpoint, hopfield, device, seed):
+    """No label enters augmentation, adaptation or retrieval."""
+    validate_checkpoint(checkpoint)
+    augmented = augment_image(image).to(device)
+    cue = fit_block(checkpoint["initial_vae"], augmented.split(16),
+                    checkpoint["config"]["lr"], device, seed)
+    hopfield.eval()
+    with torch.no_grad():
+        retrieved, weights = retrieve_parameters(
+            hopfield, cue.unsqueeze(0), checkpoint["memories"].to(device),
+            initial_vector(checkpoint["initial_vae"]).to(device))
+    selected = weights.argmax(-1).item()
+    return {"predicted_digit": checkpoint["digits"][selected],
+            "selected_memory": selected, "associations": weights[0].cpu().tolist(),
+            "optimizer_updates": 5, "augmented_images": 80}, cue.cpu(), retrieved[0].cpu()
+
+
+def run(args):
+    torch.manual_seed(args.seed)
+    torch.set_num_threads(args.threads)
+    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
+    validate_checkpoint(checkpoint)
+    if checkpoint["digits"] != list(range(10)):
+        raise ValueError("Evaluation requires all ten memories")
+    config = checkpoint["config"]
+    hopfield = make_retriever(checkpoint["parameter_count"], config["feature_size"],
+                              config["association_size"]).to(args.device)
+    hopfield.load_state_dict(checkpoint["hopfield"])
+    dataset = load_mnist(config["data_dir"], train=False)
+    order = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(args.seed))
+    if args.test_limit:
+        order = order[:args.test_limit]
+    output = Path(args.output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    rows, confusion = [], torch.zeros(10, 10, dtype=torch.long)
+    for position, index in enumerate(order.tolist()):
+        image, label = dataset[index]
+        result, cue, retrieved = predict_image(image, checkpoint, hopfield, args.device,
+                                               args.seed + position)
+        digit = int(label)
+        result.update({"test_index": index, "true_digit": digit,
+                       "target_parameter_rmse": (retrieved - checkpoint["memories"][digit]).square().mean().sqrt().item(),
+                       "posterior_mean_source_reconstruction_bce": reconstruction_bce(
+                           retrieved, image.reshape(1, 784), args.device)})
+        confusion[digit, result["predicted_digit"]] += 1
+        rows.append(result)
+        if args.save_cues:
+            # Stream artifacts to disk rather than retaining ~12 GB for 10,000 images.
+            torch.save({"delta_cue": cue, "retrieved_parameters": retrieved,
+                        "test_index": index}, output / f"test_cue_{index:05d}.pt")
+        print(json.dumps(result), flush=True)
+    report = {"config": vars(args), "training_config": config,
+              "experiment": "single_image_5update_v1",
+              "protocol": "Each shuffled test image independently generates 40 rotations and 40 stretches. "
+                          "Fresh VAE2 and Adam adapt on five batches of sixteen. Labels only score predictions. "
+                          "Source-image reconstruction is an adaptation metric, not held-out reconstruction.",
+              "accuracy": confusion.diag().sum().item() / len(rows),
+              "test_images": len(rows), "confusion_matrix": confusion.tolist(), "predictions": rows}
+    (output / "evaluation.json").write_text(json.dumps(report, indent=2) + "\n")
+    return report
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", default="work/vae_single_image_memory/checkpoint.pt")
+    parser.add_argument("--output-dir", default="work/vae_single_image_memory")
+    parser.add_argument("--test-limit", type=int, default=0, help="0 evaluates all 10,000 test images")
+    parser.add_argument("--save-cues", action="store_true")
+    parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--device", default="cpu")
+    args = parser.parse_args()
+    if args.test_limit < 0 or args.threads < 1:
+        parser.error("test-limit must be nonnegative and threads positive")
+    return args
+
+
+if __name__ == "__main__":
+    run(parse_args())
