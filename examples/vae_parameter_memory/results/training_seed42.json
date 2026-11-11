@@ -1,0 +1,293 @@
+{
+  "config": {
+    "data_dir": "work/data",
+    "output_dir": "work/vae_parameter_memory",
+    "epochs": 10,
+    "batch_size": 16,
+    "cue_passes": 1,
+    "lr": 0.001,
+    "hopfield_steps": 200,
+    "hopfield_lr": 0.001,
+    "feature_size": 2048,
+    "association_size": 64,
+    "train_limit": 0,
+    "seed": 42,
+    "threads": 2,
+    "device": "cpu"
+  },
+  "parameter_count": 150139,
+  "digits": [
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 126.84197259552363,
+      "validation_history": [
+        180.32110869743772,
+        154.88087733559826,
+        148.63049833609725,
+        141.96443297207657,
+        136.1270210176053,
+        130.78089031200184,
+        129.53076764986446,
+        128.6769451379374,
+        128.10376908043384,
+        126.84197259552363
+      ],
+      "updates_per_epoch": 334,
+      "digit": 0,
+      "train_examples": 5330,
+      "validation_examples": 593,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 0.0,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 50.6603815375434,
+      "validation_history": [
+        67.73093921802662,
+        63.23079614709925,
+        59.25200050636574,
+        57.08951212565104,
+        56.372963957609954,
+        55.40191177933304,
+        54.05515765154803,
+        51.84084630895544,
+        51.212340087890624,
+        50.6603815375434
+      ],
+      "updates_per_epoch": 380,
+      "digit": 1,
+      "train_examples": 6067,
+      "validation_examples": 675,
+      "cue_variants": 7,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 0.0007498289924114943,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 143.0046662196217,
+      "validation_history": [
+        193.42573526881685,
+        177.5757843632026,
+        172.1309337231937,
+        163.440964666789,
+        159.2770024242017,
+        156.94161475264787,
+        151.80790853820392,
+        146.9394189207346,
+        145.0301965291068,
+        143.0046662196217
+      ],
+      "updates_per_epoch": 336,
+      "digit": 2,
+      "train_examples": 5362,
+      "validation_examples": 596,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 0.00010079787170980126,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 131.36419906367698,
+      "validation_history": [
+        181.8342569456815,
+        163.0569599164037,
+        145.3916777073366,
+        142.6817565321534,
+        141.8005641477504,
+        140.19097552470353,
+        136.8643749125229,
+        133.58928687875357,
+        132.79879392940757,
+        131.36419906367698
+      ],
+      "updates_per_epoch": 345,
+      "digit": 3,
+      "train_examples": 5517,
+      "validation_examples": 614,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 0.00013268375187180936,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 112.12281984508547,
+      "validation_history": [
+        162.95431523771367,
+        147.00936268863515,
+        136.91981900206997,
+        128.67769702357106,
+        122.28761664496528,
+        118.59672079493856,
+        116.21334343282585,
+        113.80906784188033,
+        112.69753084101228,
+        112.12281984508547
+      ],
+      "updates_per_epoch": 329,
+      "digit": 4,
+      "train_examples": 5257,
+      "validation_examples": 585,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 5.461284308694303e-05,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 135.02992341268128,
+      "validation_history": [
+        175.78889704189686,
+        160.89612333462821,
+        155.3032527804155,
+        147.68553698348296,
+        142.02362588843806,
+        139.66182049774113,
+        138.18215723195786,
+        136.72735584462765,
+        136.12547906415458,
+        135.02992341268128
+      ],
+      "updates_per_epoch": 305,
+      "digit": 5,
+      "train_examples": 4878,
+      "validation_examples": 543,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 4.885001908405684e-05,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 114.3191241702518,
+      "validation_history": [
+        144.87462224187078,
+        134.4140818827861,
+        128.52299293311867,
+        122.51817012477565,
+        119.0853461188239,
+        117.48208638784048,
+        116.64113018963788,
+        115.60062099147487,
+        115.00262100632126,
+        114.3191241702518
+      ],
+      "updates_per_epoch": 333,
+      "digit": 6,
+      "train_examples": 5326,
+      "validation_examples": 592,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 9.051273809745908e-05,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 96.87735068094597,
+      "validation_history": [
+        142.53720175516472,
+        129.79994749224358,
+        123.9702765116471,
+        113.33875932952053,
+        108.44769618081514,
+        107.23385634718899,
+        101.6792724219996,
+        99.01799266760429,
+        98.22920823287356,
+        96.87735068094597
+      ],
+      "updates_per_epoch": 353,
+      "digit": 7,
+      "train_examples": 5638,
+      "validation_examples": 627,
+      "cue_variants": 7,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 3.8207810575840995e-05,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 142.17289405796714,
+      "validation_history": [
+        178.40341488574552,
+        161.235781100016,
+        156.38567094509918,
+        154.62048589817087,
+        151.79495083024477,
+        146.63923139865082,
+        145.67888466896864,
+        143.65185651030558,
+        142.93023889951738,
+        142.17289405796714
+      ],
+      "updates_per_epoch": 330,
+      "digit": 8,
+      "train_examples": 5265,
+      "validation_examples": 586,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 3.111680780421011e-05,
+        "cue_accuracy": 1.0
+      }
+    },
+    {
+      "best_epoch": 10,
+      "best_validation_negative_elbo": 107.56809692382812,
+      "validation_history": [
+        140.39193746101955,
+        131.4385325712316,
+        123.15034620781907,
+        120.41538414193802,
+        115.38284178661699,
+        113.85635863232011,
+        112.35254213990284,
+        111.0045861508666,
+        108.73249214236476,
+        107.56809692382812
+      ],
+      "updates_per_epoch": 335,
+      "digit": 9,
+      "train_examples": 5354,
+      "validation_examples": 595,
+      "cue_variants": 6,
+      "examples_per_block": 800,
+      "batches_per_cue": 50,
+      "hopfield_training": {
+        "loss": 6.46128537482582e-05,
+        "cue_accuracy": 1.0
+      }
+    }
+  ],
+  "torch_version": "2.15.0+cpu",
+  "protocol": "Ten independent digit-specific VAE0 experts from shared initialization. VAE2 variants use one pass over 50-batch training blocks, resetting parameters and optimizer per block. Hopfield replay learns variant-to-best-memory pairs. Test images and test labels are excluded from this training."
+}

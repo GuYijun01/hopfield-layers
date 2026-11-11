@@ -1,0 +1,30 @@
+"""Parameter-memory association network, separate from VAE0 and VAE2."""
+import torch
+from torch.nn import functional as F
+from hflayers.modern import ModernHopfield
+
+
+def train_retriever(hopfield, cues, targets, memories, steps, lr):
+    """Replay all observed variants, with one fixed final memory per digit."""
+    if len(memories) == 1:
+        return {"loss": 0.0, "cue_accuracy": 1.0}
+    optimizer = torch.optim.Adam(hopfield.parameters(), lr=lr)
+    hopfield.train()
+    for _ in range(steps):
+        optimizer.zero_grad()
+        retrieved, weights = hopfield(cues, memories, return_associations=True)
+        loss = F.nll_loss(weights.clamp_min(1e-12).log(), targets)
+        loss += F.mse_loss(retrieved, memories[targets]) / memories.var(unbiased=False).clamp_min(1e-8)
+        loss.backward()
+        optimizer.step()
+    hopfield.eval()
+    with torch.no_grad():
+        _, weights = hopfield(cues, memories, return_associations=True)
+        association_loss = F.nll_loss(weights.clamp_min(1e-12).log(), targets).item()
+    return {"loss": association_loss,
+            "cue_accuracy": (weights.argmax(-1) == targets).float().mean().item()}
+
+
+def make_retriever(parameter_count, feature_size=2048, association_size=64):
+    return ModernHopfield(parameter_count, association_size, feature_size,
+                          beta=20.0, update_steps_max=0)
