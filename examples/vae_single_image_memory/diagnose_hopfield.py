@@ -24,6 +24,9 @@ def run(args):
     torch.set_num_threads(args.threads)
     checkpoint = torch.load(source, map_location="cpu", weights_only=True)
     validate_checkpoint(checkpoint)
+    if checkpoint.get("hopfield_cue_protocol", "distinct_image_blocks_v1") != "distinct_image_blocks_v1":
+        raise ValueError("This diagnostic is for the block-trained baseline. For augmented training, "
+                         "plot the hopfield_training.json already written by train_augmented.")
     if checkpoint["digits"] != list(range(10)):
         raise ValueError("Diagnostics require all ten stored memories")
     config = checkpoint["config"]

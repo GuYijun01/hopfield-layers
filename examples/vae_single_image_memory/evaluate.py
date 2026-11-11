@@ -71,6 +71,7 @@ def run(args):
         print(json.dumps(result), flush=True)
     report = {"config": vars(args), "training_config": config,
               "experiment": "single_image_5update_v1",
+              "hopfield_cue_protocol": checkpoint.get("hopfield_cue_protocol", "distinct_image_blocks_v1"),
               "protocol": "Each shuffled test image independently generates 40 rotations and 40 stretches. "
                           "Fresh VAE2 and Adam adapt on five batches of sixteen. Labels only score predictions. "
                           "Source-image reconstruction is an adaptation metric, not held-out reconstruction.",

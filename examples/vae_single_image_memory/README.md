@@ -63,3 +63,59 @@ python examples/vae_single_image_memory/results/plot_accuracy.py work/vae_single
 To diagnose the original Hopfield projection with training/validation loss
 curves while reusing the cached expert bank and training cues, see the
 [diagnostic instructions](results/README.md#hopfield-trainingvalidation-curves-using-your-original-checkpoint).
+
+## Matched single-image augmented training
+
+The baseline `train.py` remains available for comparison. The new entry point
+`train_augmented.py` reuses its expert checkpoint and trains a fresh Hopfield
+projection on single-image augmented cues. It uses the exact same `augment_image`
+function, transformation strength, fixed ordering, and five-update VAE2 procedure
+as `evaluate.py`. Expert parameters, initialization, projection architecture,
+loss, replay order, optimizer steps and learning rate are unchanged.
+
+By default, the number of training cues per digit matches the source checkpoint.
+Each new cue uses a different original image sampled from that digit's original
+90% training split. This is a sampled subset, not a cue for every training image.
+For example, 668 baseline cues become 668 single-source-image cues. Override
+with `--cues-per-digit N` only for a separate cue-budget experiment. No original
+image is duplicated within the training cue set. The remaining 10% split supplies
+disjoint augmented validation sources. It previously selected expert checkpoints,
+but never updates or selects Hopfield weights. Default validation cue counts
+match the original diagnostic's full-block count (at least one per digit);
+`--validation-cues-per-digit N` can increase the validation sample size.
+
+In Colab, first mount Drive and pull the branch, then run from the repository root:
+
+```python
+SOURCE = "/content/hopfield-layers/work/vae_single_image_memory/checkpoint.pt"
+OUTPUT = "/content/drive/MyDrive/NEURO/hopfield_experiment2/augmented_cues"
+
+!python -m examples.vae_single_image_memory.train_augmented --source "{SOURCE}" --output-dir "{OUTPUT}" --device cuda
+```
+
+The source checkpoint is preserved. Outputs include `checkpoint.pt`,
+`validation_cues.pt`, and `hopfield_training.json` with all ten replay stages.
+The report also scores the frozen block-trained baseline on the exact same
+augmented training/validation cue sets before refitting. Curves are recorded
+during this actual new run:
+
+```python
+!python examples/vae_single_image_memory/results/plot_hopfield_training.py "{OUTPUT}/hopfield_training.json"
+
+from IPython.display import Image, display
+display(Image(filename=f"{OUTPUT}/hopfield_stage_10.png"))
+```
+
+Test with the existing evaluator. Keep the same `--seed` and `--test-limit` as
+the baseline (default seed 123) to use the same original images, order and latent
+sampling seeds. Only the saved Hopfield projection differs at inference:
+
+```python
+!python -m examples.vae_single_image_memory.evaluate --checkpoint "{OUTPUT}/checkpoint.pt" --output-dir "{OUTPUT}/test_1000" --device cuda --test-limit 1000 --seed 123
+!python examples/vae_single_image_memory/results/plot_accuracy.py "{OUTPUT}/test_1000/evaluation.json"
+display(Image(filename=f"{OUTPUT}/test_1000/evaluation_accuracy.png"))
+```
+
+The 1,000 test images already inspected are a comparison set, not an untouched
+final test. Use validation results for subsequent choices and reserve fresh test
+images or an independently held-out set for a final estimate.

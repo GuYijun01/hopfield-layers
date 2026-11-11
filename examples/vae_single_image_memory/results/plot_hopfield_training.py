@@ -40,7 +40,7 @@ def plot_training(report_path, output_path=None, stage=10):
         ax.grid(alpha=0.25)
         ax.legend()
     fig.suptitle(
-        f"Hopfield projection refit — {stage} memories\n"
+        f"{report.get('plot_title', 'Hopfield projection refit')} — {stage} memories\n"
         f"{data['train_cues']} training cues, {data['validation_cues']} validation cues; "
         "experts and cue protocol fixed",
     )
@@ -51,7 +51,8 @@ def plot_training(report_path, output_path=None, stage=10):
     plt.close(fig)
     print(f"Saved plot: {output_path}")
     print("Final refit metrics: " + json.dumps(history[-1]))
-    print("Exact original saved model: " + json.dumps(report["frozen_original"]))
+    print(report.get("frozen_original_description", "Exact original saved model") + ": "
+          + json.dumps(report["frozen_original"]))
     return output_path
 
 
