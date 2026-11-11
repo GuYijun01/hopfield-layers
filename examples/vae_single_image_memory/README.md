@@ -50,3 +50,12 @@ this costs about 12 GB for the complete test set, so it is off by default.
 ```bash
 python -m unittest discover -s examples/vae_single_image_memory/tests -v
 ```
+
+## Accuracy plots
+
+See [results/README.md](results/README.md) for saving Colab evaluation results
+and plotting a confusion matrix and per-digit accuracy. From the repository root:
+
+```bash
+python examples/vae_single_image_memory/results/plot_accuracy.py work/vae_single_image_memory/evaluation.json
+```
