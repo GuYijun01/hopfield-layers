@@ -19,23 +19,35 @@ def validate_checkpoint(checkpoint):
     expected = augmentation_config(checkpoint.get("augmentation_profile", "legacy"))
     if checkpoint.get("augmentation_config", expected) != expected:
         raise ValueError("Checkpoint augmentation settings do not match its saved profile")
+    if checkpoint.get("augmentation_profile") == "balanced80_resampled_v1":
+        from .balanced_cues import SAMPLING
+        if checkpoint.get("cue_sampling") != SAMPLING:
+            raise ValueError("Balanced checkpoint must use fresh permutation sampling per update")
 
 
 def predict_image(image, checkpoint, hopfield, device, seed):
     """No label enters augmentation, adaptation or retrieval."""
     validate_checkpoint(checkpoint)
-    augmented = augment_image(image, profile=checkpoint.get("augmentation_profile", "legacy"), seed=seed).to(device)
-    cue = fit_block(checkpoint["initial_vae"], augmented.split(16),
-                    checkpoint["config"]["lr"], device, seed)
+    if checkpoint.get("augmentation_profile") == "balanced80_resampled_v1":
+        from .balanced_cues import fit_image_cue
+        cue = fit_image_cue(checkpoint["initial_vae"], image, checkpoint["config"]["lr"], device, seed)
+    else:
+        augmented = augment_image(image, profile=checkpoint.get("augmentation_profile", "legacy"), seed=seed).to(device)
+        cue = fit_block(checkpoint["initial_vae"], augmented.split(16),
+                        checkpoint["config"]["lr"], device, seed)
     hopfield.eval()
     with torch.no_grad():
         retrieved, weights = retrieve_parameters(
             hopfield, cue.unsqueeze(0), checkpoint["memories"].to(device),
             initial_vector(checkpoint["initial_vae"]).to(device))
     selected = weights.argmax(-1).item()
-    return {"predicted_digit": checkpoint["digits"][selected],
-            "selected_memory": selected, "associations": weights[0].cpu().tolist(),
-            "optimizer_updates": 5, "augmented_images": 80}, cue.cpu(), retrieved[0].cpu()
+    prediction = {"predicted_digit": checkpoint["digits"][selected],
+                  "selected_memory": selected, "associations": weights[0].cpu().tolist(),
+                  "optimizer_updates": 5, "augmented_images": 80}
+    if checkpoint.get("augmentation_profile") == "balanced80_resampled_v1":
+        from .balanced_cues import update_indices
+        prediction["distinct_augmented_views_used"] = len(update_indices(seed).unique())
+    return prediction, cue.cpu(), retrieved[0].cpu()
 
 
 def run(args):
@@ -53,8 +65,16 @@ def run(args):
     order = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(args.seed))
     if args.test_limit:
         order = order[:args.test_limit]
-    output = Path(args.output_dir)
-    output.mkdir(parents=True, exist_ok=True)
+    prefix = getattr(args, "output_prefix", None)
+    if prefix:
+        output = Path(prefix).parent
+        if not output.is_dir():
+            raise ValueError(f"Output prefix must use an existing directory: {output}")
+        report_path = Path(str(prefix) + "_evaluation.json")
+    else:
+        output = Path(args.output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        report_path = output / "evaluation.json"
     rows, confusion = [], torch.zeros(10, 10, dtype=torch.long)
     for position, index in enumerate(order.tolist()):
         image, label = dataset[index]
@@ -70,20 +90,21 @@ def run(args):
         if args.save_cues:
             # Stream artifacts to disk rather than retaining ~12 GB for 10,000 images.
             torch.save({"delta_cue": cue, "retrieved_parameters": retrieved,
-                        "test_index": index}, output / f"test_cue_{index:05d}.pt")
+                        "test_index": index}, Path(str(prefix) + f"_test_cue_{index:05d}.pt")
+                       if prefix else output / f"test_cue_{index:05d}.pt")
         print(json.dumps(result), flush=True)
     report = {"config": vars(args), "training_config": config,
               "experiment": "single_image_5update_v1",
               "hopfield_cue_protocol": checkpoint.get("hopfield_cue_protocol", "distinct_image_blocks_v1"),
               "augmentation_profile": checkpoint.get("augmentation_profile", "legacy"),
               "augmentation_config": augmentation_config(checkpoint.get("augmentation_profile", "legacy")),
-              "protocol": "Each shuffled test image independently generates 40 rotations and 40 axis-scaled views. "
-                          "The saved augmentation profile defines geometry and view shuffling. "
+              "protocol": "Each shuffled test image independently generates an 80-view augmentation pool. "
+                          "The saved profile defines geometry, view shuffling and per-update sampling. "
                           "Fresh VAE2 and Adam adapt on five batches of sixteen. Labels only score predictions. "
                           "Source-image reconstruction is an adaptation metric, not held-out reconstruction.",
               "accuracy": confusion.diag().sum().item() / len(rows),
               "test_images": len(rows), "confusion_matrix": confusion.tolist(), "predictions": rows}
-    (output / "evaluation.json").write_text(json.dumps(report, indent=2) + "\n")
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
     return report
 
 
@@ -91,6 +112,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", default="work/vae_single_image_memory/checkpoint.pt")
     parser.add_argument("--output-dir", default="work/vae_single_image_memory")
+    parser.add_argument("--output-prefix", help="Save <prefix>_evaluation.json in an existing directory; overrides output-dir")
     parser.add_argument("--test-limit", type=int, default=0, help="0 evaluates all 10,000 test images")
     parser.add_argument("--save-cues", action="store_true")
     parser.add_argument("--seed", type=int, default=123)

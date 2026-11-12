@@ -1,3 +1,6 @@
 work/
 __pycache__/
 *.py[cod]
+/balanced80_*.pt
+/balanced80_*.json
+/balanced80_*.png

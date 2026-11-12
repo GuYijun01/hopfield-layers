@@ -6,6 +6,9 @@ from torch.nn import functional as F
 
 def augmentation_config(profile="legacy"):
     """Return the geometry and order saved in each checkpoint/report."""
+    if profile == "balanced80_resampled_v1":
+        from .balanced_cues import augmentation_config as balanced_config
+        return balanced_config()
     if profile == "legacy":
         return {"rotation_degrees": 45.0, "scale_min": 1.05, "scale_max": 1.5,
                 "shuffle": False, "rotations": 40, "horizontal": 20, "vertical": 20}
@@ -24,6 +27,9 @@ def augment_image(image, *, profile="legacy", seed=0):
     outside the original 28x28 canvas is cropped. Seed does not change the
     global RNG or the independently seeded VAE latent-noise generator.
     """
+    if profile == "balanced80_resampled_v1":
+        from .balanced_cues import augment_image as balanced_views
+        return balanced_views(image)  # Pool only; fit_image_cue reshuffles each update.
     config = augmentation_config(profile)
     image = torch.as_tensor(image, dtype=torch.float32)
     if image.numel() != 784:

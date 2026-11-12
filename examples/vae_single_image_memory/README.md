@@ -214,3 +214,92 @@ images, not independent new training or validation examples.
 To isolate the two sources of randomness, repeat the command with `--vary shuffle`
 and `--vary latent`, using separate output directories. No large cue files are
 saved by this diagnostic; JSON and PNG can be copied to Drive afterward.
+
+## Balanced transforms, per-update shuffle, and more source images
+
+New files `balanced_cues.py` and `train_balanced.py` live in this same package.
+No additional source or output directories are required. Prior experiments
+remain available. The new 80-view pool has five equally sized families:
+
+| Family | Views | Values |
+| --- | ---: | --- |
+| Rotation | 16 | Equally spaced from -10 to +10 degrees |
+| Horizontal scale | 16 | Equally spaced from 0.90 to 1.10 |
+| Vertical scale | 16 | Equally spaced from 0.90 to 1.10 |
+| Uniform scale | 16 | Both axes together, equally spaced from 0.90 to 1.10 |
+| Translation | 16 | All x/y combinations of {-2, -1, +1, +2} pixels |
+
+Each family transforms the original image independently. Transforms are centered,
+use bilinear interpolation and black background, and retain a 28x28 canvas.
+Translation limits are per axis, so diagonal displacement can exceed two pixels.
+
+Before **each** of the five VAE2 updates, make a fresh random permutation of the
+entire pool and take its first 16 views. There are no duplicate indices within a
+batch. Views can repeat across batches, and some pool members can be unused.
+This is per-update resampling, not a single shuffled pass over all 80 views.
+The same seed-controlled procedure runs in training, validation and testing.
+VAE2 parameters and Adam state reset for every source image, with the same
+negative-ELBO objective and five updates. No new expert VAE training is required.
+
+Defaults are **500 distinct training sources per digit (5,000 cues)** and
+**100 validation sources per digit (1,000 cues)**, sampled from the original
+90/10 split. Override `--images-per-digit N` (`0` uses every training source)
+and `--validation-per-digit N`. A sample-capped expert checkpoint must have
+enough images in its original splits for the requested counts. Validation images
+previously selected the expert checkpoints but never update or select Hopfield.
+
+Hopfield still uses the shared 2048-to-64 projection, all seen memories, full-batch
+optimizer steps, and the same CE plus normalized parameter-MSE loss. For memory
+deltas A, association weights alpha and one-hot targets y, the MSE numerator is
+`(alpha-y) @ (A @ A.T / D) @ (alpha-y).T` per cue. The implementation uses the
+small memory Gram matrix rather than materializing a B-by-D retrieved tensor.
+Only the selected cue coordinates need caching because the original projection
+uses those coordinates. The full expert memories are preserved for inference.
+Tests compare both loss and encoder gradients against explicit full-parameter
+retrieval. This is an algebraic computation change, not a new model or loss.
+
+### Colab
+
+After mounting Drive and updating the repository in your separate setup cells,
+restore a completed expert or mild checkpoint to local storage. The earlier
+restoration cell sets `CHECKPOINT="/content/mild_checkpoint.pt"`, which can be
+reused here. Use prefixes in existing directories; commands do not create
+experiment folders:
+
+```python
+%cd /content/hopfield-layers
+!git pull origin heterogeneous-memory
+
+CHECKPOINT = "/content/mild_checkpoint.pt"
+PREFIX = "/content/balanced80"
+BACKUP = "/content/drive/MyDrive/NEURO/hopfield_experiment2/balanced80"
+
+!python -m examples.vae_single_image_memory.train_balanced --source "{CHECKPOINT}" --output-prefix "{PREFIX}" --backup-prefix "{BACKUP}" --device cuda
+```
+
+The local files are `balanced80_cue_cache.pt`, `balanced80_checkpoint.pt` and
+`balanced80_training.json`. The backup prefix creates the same filenames in your
+existing `hopfield_experiment2` folder, without a new subfolder. Cue caches are
+saved and optionally backed up after each completed digit. On interruption,
+restore the saved cache to the local prefix and rerun the same command; completed
+cue generation is reused after checking its settings and expert-bank fingerprint.
+Hopfield optimization restarts from the same seeded initialization using the
+cache. Prefixes with incompatible existing caches are rejected.
+
+```python
+!python examples/vae_single_image_memory/results/plot_hopfield_training.py "{PREFIX}_training.json" --output "{PREFIX}_training.png"
+
+from IPython.display import Image, display
+display(Image(filename=f"{PREFIX}_training.png"))
+
+!python -m examples.vae_single_image_memory.evaluate --checkpoint "{PREFIX}_checkpoint.pt" --output-prefix "{PREFIX}" --device cuda --test-limit 1000 --seed 123
+!python examples/vae_single_image_memory/results/plot_accuracy.py "{PREFIX}_evaluation.json" --output "{PREFIX}_accuracy.png"
+display(Image(filename=f"{PREFIX}_accuracy.png"))
+```
+
+The evaluator selects the balanced per-update sampler from checkpoint metadata;
+older checkpoints keep their original sampler. Balanced checkpoints cache
+`cue_features` rather than full `cues` and are not inputs to the older
+`diagnose_seeds.py`. Full VAE parameters are still retrieved at test time.
+Plot and evaluation files can be copied to Drive using `shutil.copyfile` after
+completion. No accuracy improvement is assumed before measurement.
