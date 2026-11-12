@@ -380,3 +380,80 @@ display(Image(filename=f"{SEPARATE}_training.png"))
 
 Restore the two input files from Drive if local storage was reset. Separate
 outputs preserve the previous shared-projection checkpoint and loss curves.
+
+### Train across seed realizations of the same images
+
+Use `--seed-variants 3` with an existing balanced cue cache. The first training
+variant is copied directly from that cache. Two more cues are generated per
+original training image, changing both the per-update shuffle and VAE latent
+noise seed. A fourth cue seed is reserved for diagnosis on those same images.
+Each realization independently resets VAE2 and Adam, builds the unchanged
+80-view pool, and performs exactly five updates of sixteen views.
+
+With the current image counts, the banks are:
+
+| Bank | Original images | Cue realizations | Used for gradients |
+| --- | ---: | ---: | --- |
+| Training | Same 5,000 | 15,000 (three per image) | Yes, full-batch average |
+| Held-out seed | Same 5,000 training images | 5,000 (fourth seed) | No |
+| Validation | Same 1,000 held-out images | Same 1,000 cached cues | No |
+
+Training minimizes the equally weighted mean CE-plus-normalized-parameter-MSE
+over all image/seed pairs. Every source image has the same number of training
+realizations. No held-out seed enters an optimizer update, early stopping, or
+checkpoint selection. Source-image order and targets are preserved. Geometry,
+expert memories and inference are unchanged: testing still uses a single cue
+and five VAE updates per original image. This experiment does not average
+multiple cues at test time.
+
+Additional training seeds are original_seed+10,000,000 and
+original_seed+20,000,000. The diagnostic seed is original_seed+30,000,000.
+Both independent random generators receive the chosen episode seed. The seed
+offset roles and original source indices are saved with the cache. Training and
+held-out seed values are disjoint for the current MNIST seed schedule.
+
+When seed-variants is greater than one, omitted projection-mode and learning-rate
+schedule options inherit the source checkpoint's actual settings. This preserves
+separate Wq/Wk and whichever 600-step, two-rate schedule you previously used.
+Explicit flags still override those settings. Existing single-seed commands
+retain their prior defaults. Hopfield optimization starts from the same seeded
+initial projection and replays all digits; it does not continue the old final
+weights. The frozen source model is also scored on the new banks before training,
+including its original cached training cues as a reference.
+
+After your existing mount, clone/update and checkpoint-restoration cells:
+
+```python
+%cd /content/hopfield-layers
+!git pull origin heterogeneous-memory
+
+SOURCE = "/content/balanced80_qk_checkpoint.pt"
+CACHE = "/content/balanced80_qk_cue_cache.pt"
+MULTI = "/content/balanced80_qk_seeds3"
+BACKUP = "/content/drive/MyDrive/NEURO/hopfield_experiment2/balanced80_qk_seeds3"
+
+!python -m examples.vae_single_image_memory.train_balanced --source "{SOURCE}" --cue-cache "{CACHE}" --output-prefix "{MULTI}" --backup-prefix "{BACKUP}" --seed-variants 3 --device cuda
+!python examples/vae_single_image_memory/results/plot_hopfield_training.py "{MULTI}_training.json" --output "{MULTI}_training.png"
+
+from IPython.display import Image, display
+display(Image(filename=f"{MULTI}_training.png"))
+```
+
+Adjust the input filenames if your current separate-projection run uses another
+prefix. The default source counts remain 500 training/100 validation per digit;
+pass the original counts if your base cache used different ones.
+
+The plot includes training, same-images/held-out-seed, and unseen-image validation
+curves for loss components and accuracy. A closing held-out-seed gap indicates
+better robustness to cue-generation randomness; the unseen-image curve separately
+measures handwriting generalization. Seed realizations of one image are correlated
+examples, not additional independent handwriting samples.
+
+The new prefixed `_seed_cache.pt` file holds the additional realizations and is
+saved/backed up after each completed digit/seed role. The first run generates
+15,000 new cues: 10,000 additional training cues plus 5,000 held-out-seed cues.
+Existing expert weights, original cues and validation cues are reused. Rerunning
+with the same prefix resumes completed seed roles automatically. After a runtime
+reset, restore `_cue_cache.pt` and `_seed_cache.pt` from Drive to their local
+prefix and rerun. Alternatively pass `--seed-cache` to reuse a saved expanded
+cache with another output prefix. No new directories are created.

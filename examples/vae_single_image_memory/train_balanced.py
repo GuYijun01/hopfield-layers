@@ -14,8 +14,9 @@ import shutil
 import torch
 from torch.nn import functional as F
 
-from .balanced_cues import PROFILE, SAMPLING, augmentation_config, fit_image_cue
+from .balanced_cues import PROFILE, SAMPLING, augmentation_config
 from .evaluate import validate_checkpoint
+from .seed_variants import SEED_STRIDE, assemble_cue_banks, features_for_sources, prepare_seed_variants
 from examples.vae_parameter_memory.data import digit_split, load_mnist
 from examples.vae_parameter_memory.hopfield import (
     checkpoint_projection_mode, make_retriever, retriever_from_checkpoint,
@@ -74,12 +75,7 @@ def cache_features(initial_state, dataset, indices, count, feature_indices, lr, 
     order = torch.randperm(len(indices), generator=torch.Generator().manual_seed(seed))
     sources = indices[order[:count]]
     seeds = torch.arange(count, dtype=torch.long) + seed
-    features = torch.empty(count, len(feature_indices))
-    for position, index in enumerate(sources.tolist()):
-        cue = fit_image_cue(initial_state, dataset[index][0], lr, device, int(seeds[position]))
-        features[position] = cue.index_select(0, feature_indices.to(device)).cpu()
-        if (position + 1) % 50 == 0 or position + 1 == count:
-            print(f"  generated {position + 1}/{count} cues", flush=True)
+    features = features_for_sources(initial_state, dataset, sources, seeds, feature_indices, lr, device)
     return {"features": features, "sources": sources.cpu(), "seeds": seeds}
 
 
@@ -136,11 +132,16 @@ def run(args):
         raise ValueError("Requires all ten expert memories")
     config = dict(source_checkpoint["config"])
     seed = config["seed"]
-    projection_mode = getattr(args, "projection_mode", "shared")
+    seed_variants = getattr(args, "seed_variants", 1)
+    multi_seed = seed_variants > 1
+    projection_mode = getattr(args, "projection_mode", None) or (
+        checkpoint_projection_mode(source_checkpoint) if multi_seed else "shared")
     steps = args.hopfield_steps or config["hopfield_steps"]
     lr = args.hopfield_lr or config["hopfield_lr"]
-    schedule = learning_rate_schedule(steps, lr, getattr(args, "lr_drop_after", None),
-                                      getattr(args, "hopfield_lr_final", None))
+    drop_after, final_lr = getattr(args, "lr_drop_after", None), getattr(args, "hopfield_lr_final", None)
+    if multi_seed and drop_after is None and final_lr is None:
+        drop_after, final_lr = config.get("lr_drop_after"), config.get("hopfield_lr_final")
+    schedule = learning_rate_schedule(steps, lr, drop_after, final_lr)
     boundaries = {phase["start_step"] for phase in schedule[1:]} | {phase["end_step"] for phase in schedule[:-1]}
     print("Learning-rate schedule per trained stage: " + json.dumps(schedule), flush=True)
     torch.manual_seed(seed)
@@ -197,16 +198,37 @@ def run(args):
     # Also back up a reused cache when the backup destination is newly supplied.
     backup(args, "_cue_cache.pt")
 
-    def concatenate(split, key):
-        return torch.cat([row[split][key] for row in cache["digits"]])
+    expanded = None
+    if multi_seed:
+        variant_path = output_file(args.output_prefix, "_seed_cache.pt")
+        variant_source = Path(args.seed_cache) if getattr(args, "seed_cache", None) else variant_path
+        if getattr(args, "seed_cache", None) and not variant_source.is_file():
+            raise FileNotFoundError(f"Seed cache not found: {variant_source}")
+        existing = torch.load(variant_source, map_location="cpu", weights_only=True) if variant_source.is_file() else None
 
-    train_features = concatenate("train", "features").to(args.device)
-    val_features = concatenate("validation", "features").to(args.device)
-    targets = torch.cat([torch.full((counts[d],), d, dtype=torch.long) for d in range(10)]).to(args.device)
-    val_targets = torch.arange(10, device=args.device).repeat_interleave(args.validation_per_digit)
+        def persist_variants(value):
+            save_torch(value, variant_path)
+            backup(args, "_seed_cache.pt")
+
+        expanded = prepare_seed_variants(cache, existing, source_checkpoint["initial_vae"], dataset,
+                                         feature_indices, config["lr"], args.device, seed_variants, persist_variants)
+        persist_variants(expanded)
+    banks = assemble_cue_banks(cache, expanded)
+    train_features = banks["train"]["features"].to(args.device)
+    val_features = banks["validation"]["features"].to(args.device)
+    targets = banks["train"]["targets"].to(args.device)
+    val_targets = banks["validation"]["targets"].to(args.device)
+    if multi_seed:
+        heldout_features = banks["heldout_seed"]["features"].to(args.device)
+        heldout_targets = banks["heldout_seed"]["targets"].to(args.device)
     source_retriever = retriever_from_checkpoint(source_checkpoint, args.device)
     frozen = {"train": CompactObjective(source_retriever, train_features, targets, memories, initial).metrics(),
               "validation": CompactObjective(source_retriever, val_features, val_targets, memories, initial).metrics()}
+    if multi_seed:
+        frozen["heldout_seed"] = CompactObjective(source_retriever, heldout_features, heldout_targets, memories, initial).metrics()
+        original = assemble_cue_banks(cache)["train"]
+        frozen["cached_training"] = CompactObjective(source_retriever, original["features"].to(args.device),
+                                                      original["targets"].to(args.device), memories, initial).metrics()
     del source_retriever
     report = {"source_checkpoint": str(source), "config": vars(args), "training_config": config,
               "lr_schedule": schedule,
@@ -217,21 +239,35 @@ def run(args):
               "frozen_original": frozen,
               "frozen_original_description": f"Source projection ({checkpoint_projection_mode(source_checkpoint)}) on the new cues",
               "train_cues": len(targets), "validation_cues": len(val_targets),
+              "training_images": sum(counts), "seed_variants": seed_variants,
+              "heldout_seed_cues": len(heldout_targets) if multi_seed else 0,
+              "seed_stride": SEED_STRIDE if multi_seed else None,
               "protocol": "Five independent 16-view draws from fresh permutations of one image's 80-view pool. "
                           "Views may recur across updates. Distinct source images from the original 90/10 split; "
                           "validation previously selected experts but never updates or selects Hopfield. "
                           "Unchanged full-batch CE plus normalized full-parameter MSE; no test data.", "stages": []}
+    if multi_seed:
+        report["protocol"] += (f" Average equally over {seed_variants} training seed realizations per image. "
+                               "Reuse original cues as variant one. Hold out the next seed-offset role "
+                               "on the identical training images; no gradients or checkpoint selection from that role. "
+                               "Validation source images and cues are unchanged from the base cache.")
+        report["plot_title"] += f", {seed_variants} training seeds/image"
     hopfield.load_state_dict(fresh_state)
     for digit in range(10):
         train_mask, val_mask = targets <= digit, val_targets <= digit
         train_objective = CompactObjective(hopfield, train_features[train_mask], targets[train_mask], memories[:digit + 1], initial)
         val_objective = CompactObjective(hopfield, val_features[val_mask], val_targets[val_mask], memories[:digit + 1], initial)
+        if multi_seed:
+            heldout_mask = heldout_targets <= digit
+            heldout_objective = CompactObjective(hopfield, heldout_features[heldout_mask], heldout_targets[heldout_mask], memories[:digit + 1], initial)
         history = []
 
         def record(step):
             rate = schedule[0]["lr"] if step == 0 else next(
                 phase["lr"] for phase in schedule if phase["start_step"] <= step <= phase["end_step"])
             history.append({"step": step, "lr": rate, "train": train_objective.metrics(), "validation": val_objective.metrics()})
+            if multi_seed:
+                history[-1]["heldout_seed"] = heldout_objective.metrics()
 
         record(0)
         if digit:
@@ -250,7 +286,9 @@ def run(args):
             record(steps)
         report["stages"].append({"digits_seen": digit + 1, "train_cues": int(train_mask.sum()),
                                   "validation_cues": int(val_mask.sum()), "steps": steps, "lr": lr,
-                                  "lr_schedule": schedule, "history": history})
+                                  "lr_schedule": schedule, "history": history,
+                                  "training_images": sum(counts[:digit + 1]),
+                                  "heldout_seed_cues": int(heldout_mask.sum()) if multi_seed else 0})
         output_file(args.output_prefix, "_training.json").write_text(json.dumps(report, indent=2) + "\n")
         trained = {"experiment": "single_image_5update_v1", "cue_representation": "parameter_delta_v1",
                    "hopfield_cue_protocol": PROFILE, "augmentation_profile": PROFILE,
@@ -258,8 +296,10 @@ def run(args):
                    "projection_mode": projection_mode,
                    "config": {**config, "hopfield_steps": steps, "hopfield_lr": lr,
                               "projection_mode": projection_mode,
-                              "hopfield_lr_final": getattr(args, "hopfield_lr_final", None),
-                              "lr_drop_after": getattr(args, "lr_drop_after", None)},
+                              "hopfield_lr_final": final_lr, "lr_drop_after": drop_after,
+                              "seed_variants": seed_variants},
+                   "seed_variants": seed_variants,
+                   "heldout_seed_offset": seed_variants * SEED_STRIDE if multi_seed else None,
                    "lr_schedule": schedule,
                    "parameter_count": source_checkpoint["parameter_count"],
                    "initial_vae": source_checkpoint["initial_vae"], "memories": source_checkpoint["memories"],
@@ -267,8 +307,8 @@ def run(args):
                    "hopfield": {k: v.detach().cpu() for k, v in hopfield.state_dict().items()},
                    "cue_features": train_features[train_mask].detach().cpu(),
                    "targets": targets[train_mask].cpu(),
-                   "cue_source_indices": concatenate("train", "sources")[train_mask.cpu()],
-                   "cue_seeds": concatenate("train", "seeds")[train_mask.cpu()]}
+                   "cue_source_indices": banks["train"]["sources"][train_mask.cpu()],
+                   "cue_seeds": banks["train"]["seeds"][train_mask.cpu()]}
         save_torch(trained, checkpoint_path)
         backup(args, "_checkpoint.pt")
         backup(args, "_training.json")
@@ -282,8 +322,11 @@ def parse_args():
     parser.add_argument("--output-prefix", default="balanced80", help="File prefix in an existing directory")
     parser.add_argument("--backup-prefix", help="Optional file prefix in an existing Drive directory")
     parser.add_argument("--cue-cache", help="Reuse an existing cue cache under a new output prefix")
-    parser.add_argument("--projection-mode", choices=("shared", "separate"), default="shared",
-                        help="Separate gives independent trainable query/key matrices; both start at the baseline's seeded values")
+    parser.add_argument("--projection-mode", choices=("shared", "separate"),
+                        help="Default shared; multi-seed training inherits the source mode unless overridden")
+    parser.add_argument("--seed-variants", type=int, default=1,
+                        help="Training seed realizations per image; >1 also adds one held-out seed role")
+    parser.add_argument("--seed-cache", help="Reuse or resume an existing expanded seed cache under a new prefix")
     parser.add_argument("--images-per-digit", type=int, default=500, help="Distinct training sources per digit; 0 uses all")
     parser.add_argument("--validation-per-digit", type=int, default=100)
     parser.add_argument("--hopfield-steps", type=int, help="Default: original optimizer steps per replay stage")
@@ -294,7 +337,7 @@ def parse_args():
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
-    if (args.images_per_digit < 0 or min(args.validation_per_digit, args.log_every, args.threads) < 1
+    if (args.images_per_digit < 0 or min(args.validation_per_digit, args.log_every, args.threads, args.seed_variants) < 1
             or (args.hopfield_steps is not None and args.hopfield_steps < 1)
             or (args.hopfield_lr is not None and args.hopfield_lr <= 0)):
         parser.error("Counts and learning rates must be positive; images-per-digit may be zero")
@@ -302,6 +345,8 @@ def parse_args():
         parser.error("Provide both --lr-drop-after and --hopfield-lr-final")
     if args.lr_drop_after is not None and (args.lr_drop_after < 1 or args.hopfield_lr_final <= 0):
         parser.error("LR drop step and final learning rate must be positive")
+    if args.seed_cache and args.seed_variants < 2:
+        parser.error("--seed-cache requires --seed-variants greater than one")
     return args
 
 

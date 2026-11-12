@@ -25,11 +25,13 @@ def plot_training(report_path, output_path=None, stage=10):
               ("cue_accuracy", "Correct-memory retrieval accuracy")]
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
     for ax, (key, title) in zip(axes.flat, panels):
-        for split, color in [("train", "steelblue"), ("validation", "darkorange")]:
+        for split, color, label in [("train", "steelblue", "Train"),
+                                    ("heldout_seed", "seagreen", "Same images, held-out seed"),
+                                    ("validation", "darkorange", "Unseen validation images")]:
             if all(split in row for row in history):
                 multiplier = 100 if key == "cue_accuracy" else 1
                 ax.plot(steps, [row[split][key] * multiplier for row in history],
-                        label=split.capitalize(), color=color)
+                        label=label, color=color)
         ax.set(title=title, xlabel="Hopfield optimizer steps in this stage",
                ylabel="Accuracy (%)" if key == "cue_accuracy" else "Loss")
         if key == "cue_accuracy":
@@ -42,10 +44,14 @@ def plot_training(report_path, output_path=None, stage=10):
             ax.axvline(phase["start_step"] - 0.5, color="gray", linestyle="--", alpha=0.7,
                        label=f"LR → {phase['lr']:g}")
         ax.legend()
+    subtitle = (f"{data['train_cues']} training cues, {data['validation_cues']} validation cues; "
+                "experts and cue protocol fixed")
+    if data.get("heldout_seed_cues"):
+        subtitle = (f"{data['train_cues']} training cues from {data['training_images']} images; "
+                    f"{data['heldout_seed_cues']} held-out-seed cues; {data['validation_cues']} validation cues")
     fig.suptitle(
         f"{report.get('plot_title', 'Hopfield projection refit')} — {stage} memories\n"
-        f"{data['train_cues']} training cues, {data['validation_cues']} validation cues; "
-        "experts and cue protocol fixed",
+        + subtitle, fontsize=12,
     )
     output_path = Path(output_path) if output_path else report_path.with_name(
         f"hopfield_stage_{stage:02d}.png")
