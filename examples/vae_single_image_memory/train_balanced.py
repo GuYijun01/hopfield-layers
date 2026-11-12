@@ -19,7 +19,7 @@ from .evaluate import validate_checkpoint
 from .seed_variants import SEED_STRIDE, assemble_cue_banks, features_for_sources, prepare_seed_variants
 from examples.vae_parameter_memory.data import digit_split, load_mnist
 from examples.vae_parameter_memory.hopfield import (
-    checkpoint_projection_mode, make_retriever, retriever_from_checkpoint,
+    checkpoint_projection_mode, checkpoint_value_config, make_retriever, retriever_from_checkpoint,
 )
 from examples.vae_parameter_memory.vae import VAE, initial_vector
 
@@ -98,14 +98,32 @@ class CompactObjective:
         self.gram = deltas.double() @ deltas.double().T / memories.shape[-1]
         self.variance = memories.var(unbiased=False).clamp_min(1e-8).double()
         self.one_hot = F.one_hot(targets, len(memories))
+        self.memories = memories.double()
+        self.target_norms = self.memories.square().mean(-1)
 
-    def __call__(self):
+    def associations(self):
         queries = F.normalize(self.hopfield.project_queries(self.queries), dim=-1)
         keys = F.normalize(self.hopfield.project_keys(self.keys), dim=-1)
-        weights = (self.hopfield.beta * (queries @ keys.T)).softmax(-1)
+        return (self.hopfield.beta * (queries @ keys.T)).softmax(-1)
+
+    def __call__(self):
+        weights = self.associations()
         association = F.nll_loss(weights.clamp_min(1e-12).log(), self.targets)
-        error = weights.double() - self.one_hot
-        parameter = ((error @ self.gram) * error).sum(-1).mean().clamp_min(0) / self.variance
+        if self.hopfield.value_projection is None:
+            error = weights.double() - self.one_hot
+            parameter = ((error @ self.gram) * error).sum(-1).mean().clamp_min(0) / self.variance
+        else:
+            # Linear reversal commutes with weighted retrieval. Decode the small
+            # expert bank, then compute exact full-parameter loss using Gram terms.
+            # This keeps the actual Wv/inverse path in autograd without BxD outputs.
+            decoded = self.hopfield.value_projection.round_trip(self.memories)
+            gram = decoded @ decoded.T / decoded.shape[-1]
+            cross = decoded @ self.memories.T / decoded.shape[-1]
+            coefficients = weights.double()
+            per_cue = ((coefficients @ gram) * coefficients).sum(-1)
+            per_cue -= 2 * (coefficients * cross[:, self.targets].T).sum(-1)
+            per_cue += self.target_norms[self.targets]
+            parameter = per_cue.mean().clamp_min(0) / self.variance
         accuracy = (weights.argmax(-1) == self.targets).float().mean()
         return association + parameter, association, parameter, accuracy
 
@@ -136,6 +154,11 @@ def run(args):
     multi_seed = seed_variants > 1
     projection_mode = getattr(args, "projection_mode", None) or (
         checkpoint_projection_mode(source_checkpoint) if multi_seed else "shared")
+    source_value = checkpoint_value_config(source_checkpoint)
+    value_mode = getattr(args, "value_projection", None) or (
+        source_value["value_projection"] if multi_seed else "identity")
+    value_size = getattr(args, "value_block_size", None) or source_value["value_block_size"]
+    value_seed = source_value["value_seed"]
     steps = args.hopfield_steps or config["hopfield_steps"]
     lr = args.hopfield_lr or config["hopfield_lr"]
     drop_after, final_lr = getattr(args, "lr_drop_after", None), getattr(args, "hopfield_lr_final", None)
@@ -147,9 +170,13 @@ def run(args):
     torch.manual_seed(seed)
     VAE()  # Preserve the original projection initialization sequence.
     hopfield = make_retriever(source_checkpoint["parameter_count"], config["feature_size"],
-                              config["association_size"], projection_mode=projection_mode).to(args.device)
+                              config["association_size"], projection_mode=projection_mode,
+                              value_projection=value_mode, value_block_size=value_size, value_seed=value_seed).to(args.device)
     print(f"Projection mode: {projection_mode}; trainable weights: "
           f"{sum(p.numel() for p in hopfield.parameters())}", flush=True)
+    if value_mode == "block_diagonal":
+        print(f"Reversible Wv: blocks of {value_size}, bounded unit-lower-triangular. "
+              "Exact inverse cancels Wv in the full-parameter objective; its analytical gradient is zero.", flush=True)
     fresh_state = copy.deepcopy(hopfield.state_dict())
     feature_indices = hopfield.feature_indices.cpu()
     initial = initial_vector(source_checkpoint["initial_vae"]).to(args.device)
@@ -233,6 +260,7 @@ def run(args):
     report = {"source_checkpoint": str(source), "config": vars(args), "training_config": config,
               "lr_schedule": schedule,
               "projection_mode": projection_mode,
+              "value_projection": value_mode, "value_block_size": value_size, "value_seed": value_seed,
               "trainable_parameters": sum(p.numel() for p in hopfield.parameters()),
               "augmentation_profile": PROFILE, "augmentation_config": augmentation_config(),
               "plot_title": f"Balanced 80-view cues, per-update shuffle ({projection_mode} projections)",
@@ -252,6 +280,12 @@ def run(args):
                                "on the identical training images; no gradients or checkpoint selection from that role. "
                                "Validation source images and cues are unchanged from the base cache.")
         report["plot_title"] += f", {seed_variants} training seeds/image"
+    if value_mode == "block_diagonal":
+        report["plot_title"] += ", reversible block Wv"
+        report["protocol"] += (" Values are Wv times full expert parameters; triangular solves reverse Wv. "
+                               "Blocks stay invertible by construction. Exact reversal preserves the memory mixture "
+                               "and yields zero analytical Wv gradient under this objective. No auxiliary loss added.")
+        report["initial_value_roundtrip"] = hopfield.value_projection.diagnostics(memories)
     hopfield.load_state_dict(fresh_state)
     for digit in range(10):
         train_mask, val_mask = targets <= digit, val_targets <= digit
@@ -268,6 +302,11 @@ def run(args):
             history.append({"step": step, "lr": rate, "train": train_objective.metrics(), "validation": val_objective.metrics()})
             if multi_seed:
                 history[-1]["heldout_seed"] = heldout_objective.metrics()
+            if hopfield.value_projection is not None:
+                history[-1]["value_roundtrip"] = hopfield.value_projection.diagnostics(memories[:digit + 1])
+                parameter = hopfield.value_projection.raw_lower
+                history[-1]["value_gradient_norm"] = None if parameter.grad is None else float(parameter.grad.norm())
+                history[-1]["value_parameter_change_norm"] = float((parameter.detach() - fresh_state["value_projection.raw_lower"]).norm())
 
         record(0)
         if digit:
@@ -294,8 +333,10 @@ def run(args):
                    "hopfield_cue_protocol": PROFILE, "augmentation_profile": PROFILE,
                    "augmentation_config": augmentation_config(), "cue_sampling": SAMPLING,
                    "projection_mode": projection_mode,
+                   "value_projection": value_mode, "value_block_size": value_size, "value_seed": value_seed,
                    "config": {**config, "hopfield_steps": steps, "hopfield_lr": lr,
                               "projection_mode": projection_mode,
+                              "value_projection": value_mode, "value_block_size": value_size, "value_seed": value_seed,
                               "hopfield_lr_final": final_lr, "lr_drop_after": drop_after,
                               "seed_variants": seed_variants},
                    "seed_variants": seed_variants,
@@ -324,6 +365,9 @@ def parse_args():
     parser.add_argument("--cue-cache", help="Reuse an existing cue cache under a new output prefix")
     parser.add_argument("--projection-mode", choices=("shared", "separate"),
                         help="Default shared; multi-seed training inherits the source mode unless overridden")
+    parser.add_argument("--value-projection", choices=("identity", "block_diagonal"),
+                        help="Optional invertible block Wv with exact reversal; multi-seed default inherits source")
+    parser.add_argument("--value-block-size", type=int, help="Default 16; blocks are unit-lower-triangular and bounded")
     parser.add_argument("--seed-variants", type=int, default=1,
                         help="Training seed realizations per image; >1 also adds one held-out seed role")
     parser.add_argument("--seed-cache", help="Reuse or resume an existing expanded seed cache under a new prefix")
@@ -347,6 +391,8 @@ def parse_args():
         parser.error("LR drop step and final learning rate must be positive")
     if args.seed_cache and args.seed_variants < 2:
         parser.error("--seed-cache requires --seed-variants greater than one")
+    if args.value_block_size is not None and args.value_block_size < 1:
+        parser.error("Value block size must be positive")
     return args
 
 

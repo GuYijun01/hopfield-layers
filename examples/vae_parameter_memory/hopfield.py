@@ -58,12 +58,14 @@ def train_retriever(hopfield, cues, targets, memories, steps, lr, initial, *,
             **({"history": history} if history_every else {})}
 
 
-def make_retriever(parameter_count, feature_size=2048, association_size=64, *, projection_mode="shared"):
+def make_retriever(parameter_count, feature_size=2048, association_size=64, *, projection_mode="shared",
+                    value_projection="identity", value_block_size=16, value_seed=0):
     if projection_mode not in ("shared", "separate"):
         raise ValueError("projection_mode must be 'shared' or 'separate'")
     return ModernHopfield(parameter_count, association_size, feature_size,
                           beta=20.0, update_steps_max=0,
-                          separate_projections=projection_mode == "separate")
+                          separate_projections=projection_mode == "separate",
+                          value_projection=value_projection, value_block_size=value_block_size, value_seed=value_seed)
 
 
 def checkpoint_projection_mode(checkpoint):
@@ -75,11 +77,25 @@ def checkpoint_projection_mode(checkpoint):
     return mode
 
 
+def checkpoint_value_config(checkpoint):
+    config = checkpoint.get("config", {})
+    configured = config.get("value_projection")
+    mode = checkpoint.get("value_projection", configured or "identity")
+    size = checkpoint.get("value_block_size", config.get("value_block_size", 16))
+    seed = checkpoint.get("value_seed", config.get("value_seed", config.get("seed", 0)))
+    if mode not in ("identity", "block_diagonal") or (configured is not None and configured != mode):
+        raise ValueError("Unknown or inconsistent checkpoint value_projection")
+    if not isinstance(size, int) or size < 1:
+        raise ValueError("Value block size must be a positive integer")
+    return {"value_projection": mode, "value_block_size": size, "value_seed": seed}
+
+
 def retriever_from_checkpoint(checkpoint, device):
     config = checkpoint["config"]
     model = make_retriever(checkpoint["parameter_count"], config["feature_size"],
                            config["association_size"],
-                           projection_mode=checkpoint_projection_mode(checkpoint)).to(device)
+                           projection_mode=checkpoint_projection_mode(checkpoint),
+                           **checkpoint_value_config(checkpoint)).to(device)
     model.load_state_dict(checkpoint["hopfield"])
     return model
 
@@ -87,8 +103,12 @@ def retriever_from_checkpoint(checkpoint, device):
 def retrieve_parameters(hopfield, delta_cues, memories, initial):
     """Keys use final-minus-initial deltas; return full absolute VAE parameters.
 
-    q and keys share a coordinate origin. Initial parameters are added back
-    after the single Hopfield association, so VAE restoration uses full weights.
+    Cues and keys share a coordinate origin. Identity values retrieve deltas
+    and add initial parameters back. Block values encode full expert weights
+    and reverse the transform after the single association.
     """
+    if hopfield.value_projection is not None:
+        # Project full expert parameters as values; only keys use the delta origin.
+        return hopfield(delta_cues, memories - initial, return_associations=True, values=memories)
     delta, weights = hopfield(delta_cues, memories - initial, return_associations=True)
     return delta + initial, weights

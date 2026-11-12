@@ -51,6 +51,9 @@ def comparison_data(report):
             "new_projection_mode": report["projection_mode"],
             "matched_projection_mode": config.get("projection_mode", "shared") == report["projection_mode"],
             "matched_lr_schedule": source_schedule == report["lr_schedule"],
+            "source_value_projection": config.get("value_projection", "identity"),
+            "new_value_projection": report.get("value_projection", "identity"),
+            "matched_value_projection": config.get("value_projection", "identity") == report.get("value_projection", "identity"),
             "lr_schedule": report["lr_schedule"],
             "source_cached_training_reference": baseline.get("cached_training"),
             "comparisons": rows,
@@ -73,15 +76,15 @@ def compare_seed_training(report_path, output_prefix=None):
         print(f"{row['label']:<30} {row['source']['cue_accuracy']:>10.2%} "
               f"{row['multi_seed']['cue_accuracy']:>10.2%} {row['accuracy_change_pp']:>+10.2f} "
               f"{row['source']['total_loss']:>13.5f} {row['multi_seed']['total_loss']:>11.5f}")
-    if not (summary["matched_projection_mode"] and summary["matched_lr_schedule"]):
-        print("Projection mode or LR schedule also changed; this comparison does not isolate seed training alone.")
+    if not (summary["matched_projection_mode"] and summary["matched_lr_schedule"] and summary["matched_value_projection"]):
+        print("Projection mode, value map or LR schedule changed; this comparison does not isolate seed training alone.")
     labels = ["Training cues\n(all training seeds)", "Same training images\nheld-out seed", "Unseen validation\nimages"]
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
     for ax, metric, title, multiplier in ((axes[0], "cue_accuracy", "Retrieval accuracy", 100),
                                           (axes[1], "total_loss", "Total objective", 1)):
         values = []
         for offset, key, label, color in ((-0.2, "source", "Source model", "steelblue"),
-                                           (0.2, "multi_seed", "Multi-seed model", "darkorange")):
+                                           (0.2, "multi_seed", "New model", "darkorange")):
             heights = [row[key][metric] * multiplier for row in rows]
             values.extend(heights)
             positions = [index + offset for index in range(3)]
@@ -95,7 +98,7 @@ def compare_seed_training(report_path, output_prefix=None):
         ax.grid(axis="y", alpha=0.2)
         ax.set_axisbelow(True)
         ax.legend()
-    fig.suptitle(f"Seed training comparison on identical cue banks — {summary['training_images']} training images")
+    fig.suptitle(f"Model comparison on identical cue banks — {summary['training_images']} training images")
     json_path, plot_path = Path(str(prefix) + ".json"), Path(str(prefix) + ".png")
     json_path.write_text(json.dumps(summary, indent=2) + "\n")
     fig.savefig(plot_path, dpi=200, bbox_inches="tight")

@@ -7,7 +7,7 @@ from .augment import augment_image, augmentation_config
 from .cues import fit_block
 from examples.vae_parameter_memory.data import load_mnist
 from examples.vae_parameter_memory.hopfield import (
-    checkpoint_projection_mode, retriever_from_checkpoint, retrieve_parameters,
+    checkpoint_projection_mode, checkpoint_value_config, retriever_from_checkpoint, retrieve_parameters,
 )
 from examples.vae_parameter_memory.vae import initial_vector
 from examples.vae_parameter_memory.evaluate import reconstruction_bce
@@ -15,6 +15,7 @@ from examples.vae_parameter_memory.evaluate import reconstruction_bce
 
 def validate_checkpoint(checkpoint):
     checkpoint_projection_mode(checkpoint)
+    checkpoint_value_config(checkpoint)
     if (checkpoint.get("experiment") != "single_image_5update_v1"
             or checkpoint.get("cue_representation") != "parameter_delta_v1"
             or checkpoint["config"]["batch_size"] != 16):
@@ -97,6 +98,7 @@ def run(args):
     report = {"config": vars(args), "training_config": config,
               "experiment": "single_image_5update_v1",
               "projection_mode": checkpoint_projection_mode(checkpoint),
+              **checkpoint_value_config(checkpoint),
               "hopfield_cue_protocol": checkpoint.get("hopfield_cue_protocol", "distinct_image_blocks_v1"),
               "augmentation_profile": checkpoint.get("augmentation_profile", "legacy"),
               "augmentation_config": augmentation_config(checkpoint.get("augmentation_profile", "legacy")),

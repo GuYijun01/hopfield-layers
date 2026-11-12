@@ -481,3 +481,62 @@ summary JSON. A held-out-seed gain with no validation gain indicates better seed
 robustness without improved new-handwriting generalization. Both gains would
 support an improvement on these two evaluated conditions. No cue-generation
 method, source image, or test-time update budget is changed by this summary.
+
+### Reversible block-diagonal values
+
+`hflayers/block_values.py` adds an invertible Wv without constructing a dense
+150139-by-150139 matrix. The default block width is 16. Each block is I+L,
+where L is strictly lower triangular, has entries bounded by 0.25/(b-1), and
+has trainable parameters. Diagonal entries stay exactly one. Every block remains
+invertible after any parameter update, with condition number at most 5/3.
+The partial final block is masked correctly. Encoding and triangular solves
+use float64; restored VAE parameters return to their original dtype.
+
+Queries/keys retain the existing delta preprocessing and Wq/Wk. Values are
+Wv times the **full absolute expert parameters** Y. After the soft association,
+triangular solves apply the current Wv inverse. Thus the decoded result is
+Wv^-1 Wv Y alpha = Y alpha, up to numerical error. A one-hot association
+restores that expert; a soft association restores the weighted expert mixture.
+The inverse does not turn a soft mixture into a single original expert.
+
+This is an equivalence control. Exact reversal cancels Wv from the existing
+full-parameter loss, so its analytical learning gradient is zero. Wv parameters
+are available to autograd/Adam during full training, but any tiny gradients or
+movement should be floating-point residuals, not useful learning. No auxiliary
+objective or value-space loss has been added. The report records round-trip
+errors, Wv gradient norm and Wv parameter movement. Compact training includes
+the encode/decode path in autograd via decoded expert-bank Gram matrices, so
+it avoids materializing a 15000-by-150139 retrieved tensor.
+
+First attach Wv to the trained three-seed baseline and verify it **without
+retraining**. The control copies Wq/Wk exactly and compares the same cached
+training, held-out-seed and validation banks. It does not regenerate cues:
+
+```python
+%cd /content/hopfield-layers
+!git pull origin heterogeneous-memory
+
+SOURCE = "/content/balanced80_qk_seeds3_checkpoint.pt"
+CACHE = "/content/balanced80_qk_seeds3_cue_cache.pt"
+SEEDS = "/content/balanced80_qk_seeds3_seed_cache.pt"
+WV = "/content/balanced80_blockwv"
+BACKUP = "/content/drive/MyDrive/NEURO/hopfield_experiment2/balanced80_blockwv"
+
+!python -m examples.vae_single_image_memory.block_value_control --source "{SOURCE}" --cue-cache "{CACHE}" --seed-cache "{SEEDS}" --output-prefix "{WV}" --backup-prefix "{BACKUP}" --value-block-size 16 --device cuda
+```
+
+The printed association/prediction comparisons should match the source, and
+expert/soft-mixture round-trip errors should be near float64 precision. It saves
+`balanced80_blockwv_checkpoint.pt` and `balanced80_blockwv_value_control.json`.
+The checkpoint records the value-map type, size and seed, and the existing
+evaluator automatically rebuilds the map and reverses it before VAE restoration.
+Old checkpoints retain identity values. No new folders are created.
+
+If a full optimization control is desired, use a different file prefix and
+add `--value-projection block_diagonal --value-block-size 16` to
+`train_balanced`, reusing both cue caches and `--seed-variants 3`. The source
+projection mode and learning-rate schedule are inherited as before. Exact
+reversal predicts the same model function; optimization differences from
+floating-point arithmetic should not be interpreted as evidence that Wv adds
+representational capacity. A meaningful learned-value experiment would require
+changing the reconstruction requirement or training objective.
