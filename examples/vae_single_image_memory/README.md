@@ -261,16 +261,15 @@ retrieval. This is an algebraic computation change, not a new model or loss.
 ### Colab
 
 After mounting Drive and updating the repository in your separate setup cells,
-restore a completed expert or mild checkpoint to local storage. The earlier
-restoration cell sets `CHECKPOINT="/content/mild_checkpoint.pt"`, which can be
-reused here. Use prefixes in existing directories; commands do not create
+restore a completed expert or mild checkpoint to local storage. Reuse the
+`CHECKPOINT` variable from your restoration cell (for example,
+`/content/augmented_mild_run/checkpoint.pt`). Use prefixes in existing directories; commands do not create
 experiment folders:
 
 ```python
 %cd /content/hopfield-layers
 !git pull origin heterogeneous-memory
 
-CHECKPOINT = "/content/mild_checkpoint.pt"
 PREFIX = "/content/balanced80"
 BACKUP = "/content/drive/MyDrive/NEURO/hopfield_experiment2/balanced80"
 
