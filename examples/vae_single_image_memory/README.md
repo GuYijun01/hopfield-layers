@@ -302,3 +302,40 @@ older checkpoints keep their original sampler. Balanced checkpoints cache
 `diagnose_seeds.py`. Full VAE parameters are still retrieved at test time.
 Plot and evaluation files can be copied to Drive using `shutil.copyfile` after
 completion. No accuracy improvement is assumed before measurement.
+
+### Two-phase Hopfield learning rate
+
+To use 600 updates per trained digit stage, with updates 1–300 at 0.001 and
+301–600 at 0.0003, pass `--hopfield-steps 600 --hopfield-lr 0.001
+--lr-drop-after 300 --hopfield-lr-final 0.0003`. The rate changes in place:
+Adam moments and its step counter continue through the boundary. The schedule
+restarts for each arriving digit, with a fresh Adam optimizer as before.
+The trivial one-memory stage still skips optimizer updates.
+
+The schedule is stored in the JSON and checkpoint. History records the rate
+used for each logged update and always includes updates 300 and 301. The plot
+marks the rate switch. Without these two new schedule flags, training retains
+its constant-rate behavior.
+
+Reuse the exact existing cue cache with a different output prefix to preserve
+your original results. No expert training or cue regeneration is needed. After
+updating the repository, run (restore these two input files locally if needed):
+
+```python
+SOURCE = "/content/balanced80_checkpoint.pt"
+CACHE = "/content/balanced80_cue_cache.pt"
+SCHEDULED = "/content/balanced80_600"
+BACKUP = "/content/drive/MyDrive/NEURO/hopfield_experiment2/balanced80_600"
+
+!python -m examples.vae_single_image_memory.train_balanced --source "{SOURCE}" --cue-cache "{CACHE}" --output-prefix "{SCHEDULED}" --backup-prefix "{BACKUP}" --device cuda --hopfield-steps 600 --hopfield-lr 0.001 --lr-drop-after 300 --hopfield-lr-final 0.0003
+!python examples/vae_single_image_memory/results/plot_hopfield_training.py "{SCHEDULED}_training.json" --output "{SCHEDULED}_training.png"
+
+from IPython.display import Image, display
+display(Image(filename=f"{SCHEDULED}_training.png"))
+```
+
+Defaults assume the previous 500 training and 100 validation sources per digit.
+If your original cache used different source counts, pass those same counts.
+As in other balanced runs, optimization starts from the shared seeded projection
+and replays all digits. It does not append updates to the old final checkpoint.
+Files are written under new prefixed names in existing directories.

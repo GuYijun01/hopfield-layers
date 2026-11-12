@@ -38,6 +38,9 @@ def plot_training(report_path, output_path=None, stage=10):
         else:
             ax.set_ylim(bottom=0)
         ax.grid(alpha=0.25)
+        for phase in data.get("lr_schedule", [])[1:]:
+            ax.axvline(phase["start_step"] - 0.5, color="gray", linestyle="--", alpha=0.7,
+                       label=f"LR → {phase['lr']:g}")
         ax.legend()
     fig.suptitle(
         f"{report.get('plot_title', 'Hopfield projection refit')} — {stage} memories\n"

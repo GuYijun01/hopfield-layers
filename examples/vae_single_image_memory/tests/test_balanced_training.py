@@ -16,7 +16,9 @@ from examples.vae_single_image_memory.balanced_cues import (
     fit_image_cue, update_indices,
 )
 from examples.vae_single_image_memory.evaluate import predict_image
-from examples.vae_single_image_memory.train_balanced import CompactObjective, run
+from examples.vae_single_image_memory.train_balanced import (
+    CompactObjective, learning_rate_schedule, run, set_learning_rate,
+)
 
 
 class BalancedTrainingTests(unittest.TestCase):
@@ -87,6 +89,30 @@ class BalancedTrainingTests(unittest.TestCase):
         torch.testing.assert_close(values[2], parameter, atol=1e-12, rtol=1e-12)
         torch.testing.assert_close(compact.encoder.weight.grad, original.encoder.weight.grad, atol=1e-10, rtol=1e-10)
 
+    def test_exact_300_300_schedule_preserves_adam_moments(self):
+        schedule = learning_rate_schedule(600, 0.001, 300, 0.0003)
+        parameter = torch.nn.Parameter(torch.tensor([1.0]))
+        optimizer = torch.optim.Adam([parameter], lr=0.001)
+        rates = []
+        moment_ids = None
+        for step in range(1, 601):
+            rates.append(set_learning_rate(optimizer, step, schedule))
+            if step == 301:
+                self.assertEqual(int(optimizer.state[parameter]["step"]), 300)
+                self.assertEqual(moment_ids, (id(optimizer.state[parameter]["exp_avg"]),
+                                               id(optimizer.state[parameter]["exp_avg_sq"])))
+            optimizer.zero_grad()
+            parameter.square().sum().backward()
+            optimizer.step()
+            if step == 300:
+                moment_ids = (id(optimizer.state[parameter]["exp_avg"]),
+                              id(optimizer.state[parameter]["exp_avg_sq"]))
+        self.assertEqual(rates, [0.001] * 300 + [0.0003] * 300)
+        self.assertEqual(int(optimizer.state[parameter]["step"]), 600)
+        for drop_after, final_lr in ((None, 0.0003), (300, None), (0, 0.0003), (600, 0.0003)):
+            with self.assertRaises(ValueError):
+                learning_rate_schedule(600, 0.001, drop_after, final_lr)
+
     def test_cache_resume_and_checkpoint_preserve_experts_without_new_output_directories(self):
         data = TensorDataset(torch.rand(200, 784), torch.arange(10).repeat_interleave(20))
         data.targets = data.tensors[1]
@@ -129,3 +155,21 @@ class BalancedTrainingTests(unittest.TestCase):
                 repeated = run(args)
             regenerate.assert_not_called()
             self.assertEqual(report["stages"][-1]["history"], repeated["stages"][-1]["history"])
+            # A new schedule reuses the original cache under a separate file prefix.
+            original_cache_bytes = Path(args.output_prefix + "_cue_cache.pt").read_bytes()
+            args.cue_cache = args.output_prefix + "_cue_cache.pt"
+            args.output_prefix += "_scheduled"
+            args.backup_prefix += "_scheduled"
+            args.hopfield_steps, args.log_every = 6, 5
+            args.lr_drop_after, args.hopfield_lr_final = 3, 0.0003
+            with patch("examples.vae_single_image_memory.train_balanced.load_mnist", return_value=data), \
+                 patch("examples.vae_single_image_memory.train_balanced.cache_features") as regenerate:
+                scheduled = run(args)
+            regenerate.assert_not_called()
+            self.assertEqual(Path(args.cue_cache).read_bytes(), original_cache_bytes)
+            for stage in scheduled["stages"][1:]:
+                self.assertEqual([row["step"] for row in stage["history"]], [0, 3, 4, 5, 6])
+                self.assertEqual([row["lr"] for row in stage["history"]], [0.001, 0.001, 0.0003, 0.0003, 0.0003])
+            trained = torch.load(args.output_prefix + "_checkpoint.pt", weights_only=True)
+            self.assertEqual(trained["config"]["lr_drop_after"], 3)
+            self.assertEqual(trained["lr_schedule"], scheduled["lr_schedule"])

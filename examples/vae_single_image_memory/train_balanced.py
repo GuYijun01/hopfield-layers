@@ -44,6 +44,28 @@ def backup(args, suffix):
         shutil.copyfile(output_file(args.output_prefix, suffix), output_file(args.backup_prefix, suffix))
 
 
+def learning_rate_schedule(steps, initial_lr, drop_after=None, final_lr=None):
+    """Inclusive optimizer-step ranges; update drop_after+1 uses the new rate."""
+    if steps < 1 or initial_lr <= 0:
+        raise ValueError("Optimizer steps and initial learning rate must be positive")
+    if (drop_after is None) != (final_lr is None):
+        raise ValueError("Provide both --lr-drop-after and --hopfield-lr-final")
+    if drop_after is None:
+        return [{"start_step": 1, "end_step": steps, "lr": initial_lr}]
+    if not 1 <= drop_after < steps or final_lr <= 0:
+        raise ValueError("LR drop must occur between updates 1 and steps-1; final rate must be positive")
+    return [{"start_step": 1, "end_step": drop_after, "lr": initial_lr},
+            {"start_step": drop_after + 1, "end_step": steps, "lr": final_lr}]
+
+
+def set_learning_rate(optimizer, step, schedule):
+    """Change parameter-group rates in place, preserving all Adam moments."""
+    phase = next(phase for phase in schedule if phase["start_step"] <= step <= phase["end_step"])
+    for group in optimizer.param_groups:
+        group["lr"] = phase["lr"]
+    return phase["lr"]
+
+
 def cache_features(initial_state, dataset, indices, count, feature_indices, lr, device, seed):
     if count < 1 or count > len(indices):
         raise ValueError(f"Requested {count} source images, but the split contains {len(indices)}")
@@ -114,6 +136,10 @@ def run(args):
     seed = config["seed"]
     steps = args.hopfield_steps or config["hopfield_steps"]
     lr = args.hopfield_lr or config["hopfield_lr"]
+    schedule = learning_rate_schedule(steps, lr, getattr(args, "lr_drop_after", None),
+                                      getattr(args, "hopfield_lr_final", None))
+    boundaries = {phase["start_step"] for phase in schedule[1:]} | {phase["end_step"] for phase in schedule[:-1]}
+    print("Learning-rate schedule per trained stage: " + json.dumps(schedule), flush=True)
     torch.manual_seed(seed)
     VAE()  # Preserve the original projection initialization sequence.
     hopfield = make_retriever(source_checkpoint["parameter_count"], config["feature_size"],
@@ -141,12 +167,17 @@ def run(args):
     digest.update(json.dumps(recipe, sort_keys=True).encode())
     signature = digest.hexdigest()
     cache_path = output_file(args.output_prefix, "_cue_cache.pt")
+    cache_source = Path(args.cue_cache) if getattr(args, "cue_cache", None) else cache_path
+    if getattr(args, "cue_cache", None) and not cache_source.is_file():
+        raise FileNotFoundError(f"Cue cache not found: {cache_source}. Restore the saved cache to local storage first.")
     cache = {"signature": signature, "recipe": recipe, "digits": []}
-    if cache_path.exists():
-        cache = torch.load(cache_path, map_location="cpu", weights_only=True)
+    if cache_source.exists():
+        cache = torch.load(cache_source, map_location="cpu", weights_only=True)
         if cache["signature"] != signature:
             raise ValueError("Existing cue cache has different settings; choose another file prefix")
         print(f"Reusing cached cues for {len(cache['digits'])} digits", flush=True)
+        if cache_source.resolve() != cache_path.resolve():
+            save_torch(cache, cache_path)
     for digit in range(len(cache["digits"]), 10):
         train, validation = splits[digit]
         print(f"Digit {digit}: {counts[digit]} training and {args.validation_per_digit} validation source images", flush=True)
@@ -172,6 +203,7 @@ def run(args):
     frozen = {"train": CompactObjective(hopfield, train_features, targets, memories, initial).metrics(),
               "validation": CompactObjective(hopfield, val_features, val_targets, memories, initial).metrics()}
     report = {"source_checkpoint": str(source), "config": vars(args), "training_config": config,
+              "lr_schedule": schedule,
               "augmentation_profile": PROFILE, "augmentation_config": augmentation_config(),
               "plot_title": "Balanced 80-view cues, per-update shuffle",
               "frozen_original": frozen, "frozen_original_description": "Source projection on the new cues",
@@ -188,26 +220,36 @@ def run(args):
         history = []
 
         def record(step):
-            history.append({"step": step, "train": train_objective.metrics(), "validation": val_objective.metrics()})
+            rate = schedule[0]["lr"] if step == 0 else next(
+                phase["lr"] for phase in schedule if phase["start_step"] <= step <= phase["end_step"])
+            history.append({"step": step, "lr": rate, "train": train_objective.metrics(), "validation": val_objective.metrics()})
 
         record(0)
         if digit:
             optimizer = torch.optim.Adam(hopfield.parameters(), lr=lr)
             for step in range(1, steps + 1):
+                previous_rate = optimizer.param_groups[0]["lr"]
+                active_rate = set_learning_rate(optimizer, step, schedule)
+                if active_rate != previous_rate:
+                    print(f"Stage {digit + 1}, update {step}: learning rate -> {active_rate:g}", flush=True)
                 optimizer.zero_grad()
                 train_objective()[0].backward()
                 optimizer.step()
-                if step % args.log_every == 0 or step == steps:
+                if step % args.log_every == 0 or step == steps or step in boundaries:
                     record(step)
         else:
             record(steps)
         report["stages"].append({"digits_seen": digit + 1, "train_cues": int(train_mask.sum()),
-                                  "validation_cues": int(val_mask.sum()), "steps": steps, "lr": lr, "history": history})
+                                  "validation_cues": int(val_mask.sum()), "steps": steps, "lr": lr,
+                                  "lr_schedule": schedule, "history": history})
         output_file(args.output_prefix, "_training.json").write_text(json.dumps(report, indent=2) + "\n")
         trained = {"experiment": "single_image_5update_v1", "cue_representation": "parameter_delta_v1",
                    "hopfield_cue_protocol": PROFILE, "augmentation_profile": PROFILE,
                    "augmentation_config": augmentation_config(), "cue_sampling": SAMPLING,
-                   "config": {**config, "hopfield_steps": steps, "hopfield_lr": lr},
+                   "config": {**config, "hopfield_steps": steps, "hopfield_lr": lr,
+                              "hopfield_lr_final": getattr(args, "hopfield_lr_final", None),
+                              "lr_drop_after": getattr(args, "lr_drop_after", None)},
+                   "lr_schedule": schedule,
                    "parameter_count": source_checkpoint["parameter_count"],
                    "initial_vae": source_checkpoint["initial_vae"], "memories": source_checkpoint["memories"],
                    "digits": list(range(digit + 1)), "source_checkpoint": str(source),
@@ -228,10 +270,13 @@ def parse_args():
     parser.add_argument("--source", required=True, help="Existing ten-expert checkpoint, baseline or augmented")
     parser.add_argument("--output-prefix", default="balanced80", help="File prefix in an existing directory")
     parser.add_argument("--backup-prefix", help="Optional file prefix in an existing Drive directory")
+    parser.add_argument("--cue-cache", help="Reuse an existing cue cache under a new output prefix")
     parser.add_argument("--images-per-digit", type=int, default=500, help="Distinct training sources per digit; 0 uses all")
     parser.add_argument("--validation-per-digit", type=int, default=100)
     parser.add_argument("--hopfield-steps", type=int, help="Default: original optimizer steps per replay stage")
     parser.add_argument("--hopfield-lr", type=float, help="Default: original Hopfield learning rate")
+    parser.add_argument("--lr-drop-after", type=int, help="Switch learning rate after this optimizer update in each stage")
+    parser.add_argument("--hopfield-lr-final", type=float, help="Learning rate for updates after lr-drop-after")
     parser.add_argument("--log-every", type=int, default=5)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--device", default="cpu")
@@ -240,6 +285,10 @@ def parse_args():
             or (args.hopfield_steps is not None and args.hopfield_steps < 1)
             or (args.hopfield_lr is not None and args.hopfield_lr <= 0)):
         parser.error("Counts and learning rates must be positive; images-per-digit may be zero")
+    if (args.lr_drop_after is None) != (args.hopfield_lr_final is None):
+        parser.error("Provide both --lr-drop-after and --hopfield-lr-final")
+    if args.lr_drop_after is not None and (args.lr_drop_after < 1 or args.hopfield_lr_final <= 0):
+        parser.error("LR drop step and final learning rate must be positive")
     return args
 
 
