@@ -58,9 +58,30 @@ def train_retriever(hopfield, cues, targets, memories, steps, lr, initial, *,
             **({"history": history} if history_every else {})}
 
 
-def make_retriever(parameter_count, feature_size=2048, association_size=64):
+def make_retriever(parameter_count, feature_size=2048, association_size=64, *, projection_mode="shared"):
+    if projection_mode not in ("shared", "separate"):
+        raise ValueError("projection_mode must be 'shared' or 'separate'")
     return ModernHopfield(parameter_count, association_size, feature_size,
-                          beta=20.0, update_steps_max=0)
+                          beta=20.0, update_steps_max=0,
+                          separate_projections=projection_mode == "separate")
+
+
+def checkpoint_projection_mode(checkpoint):
+    """Old checkpoints have encoder.weight and default to the shared architecture."""
+    configured = checkpoint.get("config", {}).get("projection_mode")
+    mode = checkpoint.get("projection_mode", configured or "shared")
+    if mode not in ("shared", "separate") or (configured is not None and configured != mode):
+        raise ValueError("Unknown or inconsistent checkpoint projection_mode")
+    return mode
+
+
+def retriever_from_checkpoint(checkpoint, device):
+    config = checkpoint["config"]
+    model = make_retriever(checkpoint["parameter_count"], config["feature_size"],
+                           config["association_size"],
+                           projection_mode=checkpoint_projection_mode(checkpoint)).to(device)
+    model.load_state_dict(checkpoint["hopfield"])
+    return model
 
 
 def retrieve_parameters(hopfield, delta_cues, memories, initial):

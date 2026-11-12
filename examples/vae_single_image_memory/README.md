@@ -339,3 +339,44 @@ If your original cache used different source counts, pass those same counts.
 As in other balanced runs, optimization starts from the shared seeded projection
 and replays all digits. It does not append updates to the old final checkpoint.
 Files are written under new prefixed names in existing directories.
+
+### Separate query and key projections
+
+Pass `--projection-mode separate` to learn independent Wq and Wk. Each maps
+the same selected 2,048 coordinates into 64 association dimensions (262,144
+learned weights total by default). Queries use Wq and memory-delta keys use Wk,
+followed by the existing unit normalization and beta=20 cosine softmax. The full
+memory deltas remain the values; no value or output projection is introduced.
+
+Wq and Wk start with the same seeded values as the shared baseline but have
+independent parameter storage and Adam moments. Their gradients differ and they
+can diverge during training. This preserves starting predictions while removing
+the weight-sharing constraint. `--projection-mode shared` remains the default
+for previous commands. Checkpoints record the mode and evaluation automatically
+constructs the correct architecture. Older checkpoints default to shared mode.
+
+Reuse the existing balanced cue cache and the same 600-update learning-rate
+schedule. This retrains the projection stages from the seeded initialization;
+it does not continue optimization from the old final projection. No expert VAE
+training or cue regeneration is needed. No new folders are created:
+
+```python
+%cd /content/hopfield-layers
+!git pull origin heterogeneous-memory
+
+SOURCE = "/content/balanced80_checkpoint.pt"
+CACHE = "/content/balanced80_cue_cache.pt"
+SEPARATE = "/content/balanced80_qk"
+BACKUP = "/content/drive/MyDrive/NEURO/hopfield_experiment2/balanced80_qk"
+
+!python -m examples.vae_single_image_memory.train_balanced --source "{SOURCE}" --cue-cache "{CACHE}" --output-prefix "{SEPARATE}" --backup-prefix "{BACKUP}" --projection-mode separate --device cuda --hopfield-steps 600 --hopfield-lr 0.001 --lr-drop-after 300 --hopfield-lr-final 0.0003
+!python examples/vae_single_image_memory/results/plot_hopfield_training.py "{SEPARATE}_training.json" --output "{SEPARATE}_training.png"
+
+from IPython.display import Image, display
+display(Image(filename=f"{SEPARATE}_training.png"))
+
+!python -m examples.vae_single_image_memory.evaluate --checkpoint "{SEPARATE}_checkpoint.pt" --output-prefix "{SEPARATE}" --device cuda --test-limit 1000 --seed 123
+```
+
+Restore the two input files from Drive if local storage was reset. Separate
+outputs preserve the previous shared-projection checkpoint and loss curves.

@@ -51,6 +51,47 @@ class ModernHopfieldTests(unittest.TestCase):
         restored.load_state_dict(layer.state_dict())
         torch.testing.assert_close(restored(cues, memories), layer(cues, memories))
 
+    def test_separate_projections_match_initial_shared_function_but_have_independent_gradients(self):
+        torch.manual_seed(29)
+        shared = ModernHopfield(12, 5, 8)
+        torch.manual_seed(29)
+        separate = ModernHopfield(12, 5, 8, separate_projections=True)
+        self.assertNotEqual(separate.query_encoder.weight.data_ptr(), separate.key_encoder.weight.data_ptr())
+        torch.testing.assert_close(shared.encoder.weight, separate.query_encoder.weight, atol=0, rtol=0)
+        torch.testing.assert_close(shared.encoder.weight, separate.key_encoder.weight, atol=0, rtol=0)
+        cues, memories, targets = torch.randn(6, 12), torch.randn(3, 12), torch.arange(6) % 3
+        _, tied_weights = shared(cues, memories, True)
+        _, weights = separate(cues, memories, True)
+        torch.testing.assert_close(weights, tied_weights, atol=0, rtol=0)
+        F.nll_loss(tied_weights.clamp_min(1e-12).log(), targets).backward()
+        F.nll_loss(weights.clamp_min(1e-12).log(), targets).backward()
+        query_gradient = separate.query_encoder.weight.grad
+        key_gradient = separate.key_encoder.weight.grad
+        self.assertGreater(float(query_gradient.norm()), 0)
+        self.assertGreater(float(key_gradient.norm()), 0)
+        self.assertFalse(torch.equal(query_gradient, key_gradient))
+        torch.testing.assert_close(shared.encoder.weight.grad, query_gradient + key_gradient)
+        torch.optim.Adam(separate.parameters(), lr=0.001).step()
+        self.assertFalse(torch.equal(separate.query_encoder.weight, separate.key_encoder.weight))
+
+    def test_distinct_query_key_math_batches_and_serialization(self):
+        layer = ModernHopfield(6, 4, 6, beta=3, separate_projections=True)
+        with torch.no_grad():
+            layer.key_encoder.weight.add_(torch.randn_like(layer.key_encoder.weight) * 0.2)
+        cues, memories = torch.randn(2, 3, 6), torch.randn(4, 6)
+        center = memories.mean(0)
+        scale = memories.std(0, unbiased=False).clamp_min(1e-3)
+        queries = F.normalize(F.linear((cues - center) / scale, layer.query_encoder.weight), dim=-1)
+        keys = F.normalize(F.linear((memories - center) / scale, layer.key_encoder.weight), dim=-1)
+        expected = (3 * queries @ keys.T).softmax(-1)
+        retrieved, weights = layer(cues, memories, True)
+        torch.testing.assert_close(weights, expected)
+        torch.testing.assert_close(retrieved, expected @ memories)
+        torch.testing.assert_close(layer(cues, memories.expand(2, -1, -1)), retrieved)
+        restored = ModernHopfield(6, 4, 6, beta=3, separate_projections=True)
+        restored.load_state_dict(layer.state_dict())
+        torch.testing.assert_close(restored(cues, memories), retrieved)
+
     def test_one_memory_and_invalid_inputs(self):
         layer = ModernHopfield(8)
         memory = torch.randn(1, 8)

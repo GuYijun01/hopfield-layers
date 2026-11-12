@@ -17,7 +17,9 @@ from torch.nn import functional as F
 from .balanced_cues import PROFILE, SAMPLING, augmentation_config, fit_image_cue
 from .evaluate import validate_checkpoint
 from examples.vae_parameter_memory.data import digit_split, load_mnist
-from examples.vae_parameter_memory.hopfield import make_retriever
+from examples.vae_parameter_memory.hopfield import (
+    checkpoint_projection_mode, make_retriever, retriever_from_checkpoint,
+)
 from examples.vae_parameter_memory.vae import VAE, initial_vector
 
 
@@ -87,7 +89,7 @@ class CompactObjective:
     For memory deltas A, weights alpha and one-hot targets y:
     MSE = mean_i [(alpha_i-y_i) (A A^T / D) (alpha_i-y_i)^T].
     The memory Gram matrix uses float64 to limit cancellation near exact recall.
-    This preserves gradients to the shared encoder; values remain full memories.
+    This preserves gradients to shared or separate encoders; values remain full memories.
     """
     def __init__(self, hopfield, features, targets, memories, initial):
         self.hopfield, self.targets = hopfield, targets
@@ -102,8 +104,8 @@ class CompactObjective:
         self.one_hot = F.one_hot(targets, len(memories))
 
     def __call__(self):
-        queries = F.normalize(self.hopfield.encoder(self.queries), dim=-1)
-        keys = F.normalize(self.hopfield.encoder(self.keys), dim=-1)
+        queries = F.normalize(self.hopfield.project_queries(self.queries), dim=-1)
+        keys = F.normalize(self.hopfield.project_keys(self.keys), dim=-1)
         weights = (self.hopfield.beta * (queries @ keys.T)).softmax(-1)
         association = F.nll_loss(weights.clamp_min(1e-12).log(), self.targets)
         error = weights.double() - self.one_hot
@@ -134,6 +136,7 @@ def run(args):
         raise ValueError("Requires all ten expert memories")
     config = dict(source_checkpoint["config"])
     seed = config["seed"]
+    projection_mode = getattr(args, "projection_mode", "shared")
     steps = args.hopfield_steps or config["hopfield_steps"]
     lr = args.hopfield_lr or config["hopfield_lr"]
     schedule = learning_rate_schedule(steps, lr, getattr(args, "lr_drop_after", None),
@@ -143,7 +146,9 @@ def run(args):
     torch.manual_seed(seed)
     VAE()  # Preserve the original projection initialization sequence.
     hopfield = make_retriever(source_checkpoint["parameter_count"], config["feature_size"],
-                              config["association_size"]).to(args.device)
+                              config["association_size"], projection_mode=projection_mode).to(args.device)
+    print(f"Projection mode: {projection_mode}; trainable weights: "
+          f"{sum(p.numel() for p in hopfield.parameters())}", flush=True)
     fresh_state = copy.deepcopy(hopfield.state_dict())
     feature_indices = hopfield.feature_indices.cpu()
     initial = initial_vector(source_checkpoint["initial_vae"]).to(args.device)
@@ -199,14 +204,18 @@ def run(args):
     val_features = concatenate("validation", "features").to(args.device)
     targets = torch.cat([torch.full((counts[d],), d, dtype=torch.long) for d in range(10)]).to(args.device)
     val_targets = torch.arange(10, device=args.device).repeat_interleave(args.validation_per_digit)
-    hopfield.load_state_dict(source_checkpoint["hopfield"])
-    frozen = {"train": CompactObjective(hopfield, train_features, targets, memories, initial).metrics(),
-              "validation": CompactObjective(hopfield, val_features, val_targets, memories, initial).metrics()}
+    source_retriever = retriever_from_checkpoint(source_checkpoint, args.device)
+    frozen = {"train": CompactObjective(source_retriever, train_features, targets, memories, initial).metrics(),
+              "validation": CompactObjective(source_retriever, val_features, val_targets, memories, initial).metrics()}
+    del source_retriever
     report = {"source_checkpoint": str(source), "config": vars(args), "training_config": config,
               "lr_schedule": schedule,
+              "projection_mode": projection_mode,
+              "trainable_parameters": sum(p.numel() for p in hopfield.parameters()),
               "augmentation_profile": PROFILE, "augmentation_config": augmentation_config(),
-              "plot_title": "Balanced 80-view cues, per-update shuffle",
-              "frozen_original": frozen, "frozen_original_description": "Source projection on the new cues",
+              "plot_title": f"Balanced 80-view cues, per-update shuffle ({projection_mode} projections)",
+              "frozen_original": frozen,
+              "frozen_original_description": f"Source projection ({checkpoint_projection_mode(source_checkpoint)}) on the new cues",
               "train_cues": len(targets), "validation_cues": len(val_targets),
               "protocol": "Five independent 16-view draws from fresh permutations of one image's 80-view pool. "
                           "Views may recur across updates. Distinct source images from the original 90/10 split; "
@@ -246,7 +255,9 @@ def run(args):
         trained = {"experiment": "single_image_5update_v1", "cue_representation": "parameter_delta_v1",
                    "hopfield_cue_protocol": PROFILE, "augmentation_profile": PROFILE,
                    "augmentation_config": augmentation_config(), "cue_sampling": SAMPLING,
+                   "projection_mode": projection_mode,
                    "config": {**config, "hopfield_steps": steps, "hopfield_lr": lr,
+                              "projection_mode": projection_mode,
                               "hopfield_lr_final": getattr(args, "hopfield_lr_final", None),
                               "lr_drop_after": getattr(args, "lr_drop_after", None)},
                    "lr_schedule": schedule,
@@ -271,6 +282,8 @@ def parse_args():
     parser.add_argument("--output-prefix", default="balanced80", help="File prefix in an existing directory")
     parser.add_argument("--backup-prefix", help="Optional file prefix in an existing Drive directory")
     parser.add_argument("--cue-cache", help="Reuse an existing cue cache under a new output prefix")
+    parser.add_argument("--projection-mode", choices=("shared", "separate"), default="shared",
+                        help="Separate gives independent trainable query/key matrices; both start at the baseline's seeded values")
     parser.add_argument("--images-per-digit", type=int, default=500, help="Distinct training sources per digit; 0 uses all")
     parser.add_argument("--validation-per-digit", type=int, default=100)
     parser.add_argument("--hopfield-steps", type=int, help="Default: original optimizer steps per replay stage")

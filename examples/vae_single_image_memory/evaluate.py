@@ -6,12 +6,15 @@ import torch
 from .augment import augment_image, augmentation_config
 from .cues import fit_block
 from examples.vae_parameter_memory.data import load_mnist
-from examples.vae_parameter_memory.hopfield import make_retriever, retrieve_parameters
+from examples.vae_parameter_memory.hopfield import (
+    checkpoint_projection_mode, retriever_from_checkpoint, retrieve_parameters,
+)
 from examples.vae_parameter_memory.vae import initial_vector
 from examples.vae_parameter_memory.evaluate import reconstruction_bce
 
 
 def validate_checkpoint(checkpoint):
+    checkpoint_projection_mode(checkpoint)
     if (checkpoint.get("experiment") != "single_image_5update_v1"
             or checkpoint.get("cue_representation") != "parameter_delta_v1"
             or checkpoint["config"]["batch_size"] != 16):
@@ -58,9 +61,7 @@ def run(args):
     if checkpoint["digits"] != list(range(10)):
         raise ValueError("Evaluation requires all ten memories")
     config = checkpoint["config"]
-    hopfield = make_retriever(checkpoint["parameter_count"], config["feature_size"],
-                              config["association_size"]).to(args.device)
-    hopfield.load_state_dict(checkpoint["hopfield"])
+    hopfield = retriever_from_checkpoint(checkpoint, args.device)
     dataset = load_mnist(config["data_dir"], train=False)
     order = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(args.seed))
     if args.test_limit:
@@ -95,6 +96,7 @@ def run(args):
         print(json.dumps(result), flush=True)
     report = {"config": vars(args), "training_config": config,
               "experiment": "single_image_5update_v1",
+              "projection_mode": checkpoint_projection_mode(checkpoint),
               "hopfield_cue_protocol": checkpoint.get("hopfield_cue_protocol", "distinct_image_blocks_v1"),
               "augmentation_profile": checkpoint.get("augmentation_profile", "legacy"),
               "augmentation_config": augmentation_config(checkpoint.get("augmentation_profile", "legacy")),

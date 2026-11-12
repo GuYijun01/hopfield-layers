@@ -9,7 +9,7 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import TensorDataset
 
-from examples.vae_parameter_memory.hopfield import make_retriever, retrieve_parameters
+from examples.vae_parameter_memory.hopfield import make_retriever, retriever_from_checkpoint, retrieve_parameters
 from examples.vae_parameter_memory.vae import VAE
 from examples.vae_single_image_memory.balanced_cues import (
     PROFILE, SAMPLING, affine_transforms, augment_image, augmentation_config,
@@ -75,19 +75,22 @@ class BalancedTrainingTests(unittest.TestCase):
         torch.testing.assert_close(cue, test_cue, atol=0, rtol=0)
 
     def test_compact_objective_matches_full_parameter_loss_and_gradients(self):
-        original = make_retriever(23, 11, 7).double()
-        compact = copy.deepcopy(original)
         memories, initial = torch.randn(4, 23, dtype=torch.float64), torch.randn(23, dtype=torch.float64)
         cues, targets = torch.randn(9, 23, dtype=torch.float64), torch.arange(9) % 4
-        retrieved, weights = retrieve_parameters(original, cues, memories, initial)
-        association = F.nll_loss(weights.clamp_min(1e-12).log(), targets)
-        parameter = F.mse_loss(retrieved, memories[targets]) / memories.var(unbiased=False).clamp_min(1e-8)
-        (association + parameter).backward()
-        values = CompactObjective(compact, cues[:, compact.feature_indices], targets, memories, initial)()
-        values[0].backward()
-        torch.testing.assert_close(values[1], association, atol=1e-12, rtol=1e-12)
-        torch.testing.assert_close(values[2], parameter, atol=1e-12, rtol=1e-12)
-        torch.testing.assert_close(compact.encoder.weight.grad, original.encoder.weight.grad, atol=1e-10, rtol=1e-10)
+        for mode in ("shared", "separate"):
+            with self.subTest(projection_mode=mode):
+                original = make_retriever(23, 11, 7, projection_mode=mode).double()
+                compact = copy.deepcopy(original)
+                retrieved, weights = retrieve_parameters(original, cues, memories, initial)
+                association = F.nll_loss(weights.clamp_min(1e-12).log(), targets)
+                parameter = F.mse_loss(retrieved, memories[targets]) / memories.var(unbiased=False).clamp_min(1e-8)
+                (association + parameter).backward()
+                values = CompactObjective(compact, cues[:, compact.feature_indices], targets, memories, initial)()
+                values[0].backward()
+                torch.testing.assert_close(values[1], association, atol=1e-12, rtol=1e-12)
+                torch.testing.assert_close(values[2], parameter, atol=1e-12, rtol=1e-12)
+                for name, parameter in original.named_parameters():
+                    torch.testing.assert_close(dict(compact.named_parameters())[name].grad, parameter.grad, atol=1e-10, rtol=1e-10)
 
     def test_exact_300_300_schedule_preserves_adam_moments(self):
         schedule = learning_rate_schedule(600, 0.001, 300, 0.0003)
@@ -173,3 +176,21 @@ class BalancedTrainingTests(unittest.TestCase):
             trained = torch.load(args.output_prefix + "_checkpoint.pt", weights_only=True)
             self.assertEqual(trained["config"]["lr_drop_after"], 3)
             self.assertEqual(trained["lr_schedule"], scheduled["lr_schedule"])
+            args.projection_mode = "separate"
+            args.output_prefix += "_qk"
+            args.backup_prefix += "_qk"
+            with patch("examples.vae_single_image_memory.train_balanced.load_mnist", return_value=data), \
+                 patch("examples.vae_single_image_memory.train_balanced.cache_features") as regenerate:
+                separated = run(args)
+            regenerate.assert_not_called()
+            trained = torch.load(args.output_prefix + "_checkpoint.pt", weights_only=True)
+            self.assertEqual(trained["projection_mode"], "separate")
+            self.assertEqual(separated["trainable_parameters"], 2 * 8 * 4)
+            self.assertEqual(trained["config"]["projection_mode"], "separate")
+            self.assertIn("query_encoder.weight", trained["hopfield"])
+            self.assertIn("key_encoder.weight", trained["hopfield"])
+            self.assertNotIn("encoder.weight", trained["hopfield"])
+            loaded = retriever_from_checkpoint(trained, "cpu")
+            self.assertTrue(loaded.separate_projections)
+            self.assertFalse(torch.equal(loaded.query_encoder.weight, loaded.key_encoder.weight))
+            torch.testing.assert_close(trained["memories"], source_checkpoint["memories"], atol=0, rtol=0)
