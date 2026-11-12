@@ -457,3 +457,27 @@ with the same prefix resumes completed seed roles automatically. After a runtime
 reset, restore `_cue_cache.pt` and `_seed_cache.pt` from Drive to their local
 prefix and rerun. Alternatively pass `--seed-cache` to reuse a saved expanded
 cache with another output prefix. No new directories are created.
+
+### Finish the seed comparison
+
+After all ten multi-seed stages finish, compare the frozen source model and the
+new model on the identical training, held-out-seed and validation cue banks.
+All necessary baseline scores are already in the training report, so this
+summary requires neither new cue generation nor another model run:
+
+```python
+!python examples/vae_single_image_memory/results/compare_seed_training.py "{MULTI}_training.json"
+display(Image(filename=f"{MULTI}_seed_comparison.png"))
+```
+
+The command prints accuracy, total loss and accuracy change in percentage points,
+and saves `_seed_comparison.json` plus `_seed_comparison.png`. It checks completion
+and reports whether projection mode and learning-rate schedule matched the source.
+The training-bank baseline includes two variants that the original single-seed
+model did not train on; improvements on that bank alone do not establish
+generalization. Focus on the held-out-seed and unseen-image validation rows.
+The original source model's cached training score is retained separately in the
+summary JSON. A held-out-seed gain with no validation gain indicates better seed
+robustness without improved new-handwriting generalization. Both gains would
+support an improvement on these two evaluated conditions. No cue-generation
+method, source image, or test-time update budget is changed by this summary.
